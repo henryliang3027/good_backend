@@ -1,1 +1,3 @@
 pvenv/*
+ministral/*
+*.pyc
