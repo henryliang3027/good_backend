@@ -6,6 +6,10 @@ import tempfile
 import os
 import logging
 import base64
+import subprocess
+import signal
+import time
+from contextlib import asynccontextmanager
 from openai import OpenAI
 
 from utils.date_validator import DateValidator
@@ -14,11 +18,66 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 logging.root.setLevel(logging.INFO)
 
+# llama-server 進程
+llama_process = None
+
+LLAMA_SERVER_CMD = [
+    "./llama.cpp/build/bin/llama-server",
+    "-m",
+    "ministral/checkpoints-10000/gguf/model.gguf",
+    "--mmproj",
+    "ministral/checkpoints-10000/gguf/mmproj-custom-F16.gguf",
+    "--host",
+    "0.0.0.0",
+    "--port",
+    "8080",
+    "--ctx-size",
+    "4096",
+    "-ngl",
+    "-1",
+]
+
+
+def start_llama_server():
+    global llama_process
+    logger.info("Starting llama-server...")
+    llama_process = subprocess.Popen(
+        LLAMA_SERVER_CMD,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    # 等待 llama-server 啟動
+    time.sleep(5)
+    logger.info(f"llama-server started with PID: {llama_process.pid}")
+
+
+def stop_llama_server():
+    global llama_process
+    if llama_process:
+        logger.info(f"Stopping llama-server (PID: {llama_process.pid})...")
+        llama_process.terminate()
+        try:
+            llama_process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            llama_process.kill()
+        logger.info("llama-server stopped.")
+        llama_process = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 啟動時執行
+    start_llama_server()
+    yield
+    # 關閉時執行
+    stop_llama_server()
+
 
 app = FastAPI(
     title="PaddleOCR V5 API",
     description="test",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 ocr = PaddleOCR(
@@ -54,12 +113,6 @@ client = OpenAI(
     base_url="http://127.0.0.1:8080/v1",
     api_key="no-key-needed",  # 本地通常不驗證，填任意字串即可
 )
-
-
-def convert_image_to_base64(image_path):
-    with open(image_path, "rb") as image_file:
-        encoded_string = base64.b64encode(image_file.read()).decode("utf-8")
-    return f"data:image/jpeg;base64,{encoded_string}"
 
 
 def inference(base64_image, question):
