@@ -406,3 +406,55 @@ class TestExtractMultipleDates:
             },
         }
         assert result == expected
+
+    def test_no_keyword_two_dates_older_first(self):
+        """測試無關鍵字，兩個日期 (較舊在前)"""
+        text = "2025/08/14 2026/08/14"
+        result = DateValidator.extract_multiple_dates(text)
+        expected = {
+            "count": 2,
+            "date": {
+                "production": {"year": 2025, "month": 8, "day": 14},
+                "expiration": {"year": 2026, "month": 8, "day": 14},
+            },
+        }
+        assert result == expected
+
+    def test_no_keyword_two_dates_newer_first(self):
+        """測試無關鍵字，兩個日期 (較新在前)，自動比較交換"""
+        text = "2026/08/14 2025/08/14"
+        result = DateValidator.extract_multiple_dates(text)
+        expected = {
+            "count": 2,
+            "date": {
+                "production": {"year": 2025, "month": 8, "day": 14},
+                "expiration": {"year": 2026, "month": 8, "day": 14},
+            },
+        }
+        assert result == expected
+
+    def test_no_keyword_single_date(self):
+        """測試無關鍵字，只有一個日期，預設為有效日期"""
+        text = "2026/08/14"
+        result = DateValidator.extract_multiple_dates(text)
+        expected = {
+            "count": 1,
+            "date": {
+                "production": None,
+                "expiration": {"year": 2026, "month": 8, "day": 14},
+            },
+        }
+        assert result == expected
+
+    def test_no_keyword_two_dates_with_spaces(self):
+        """測試無關鍵字，日期有空格分隔符"""
+        text = "14 / 08 / 2025 14 / 08 / 2026"
+        result = DateValidator.extract_multiple_dates(text)
+        expected = {
+            "count": 2,
+            "date": {
+                "production": {"year": 2025, "month": 8, "day": 14},
+                "expiration": {"year": 2026, "month": 8, "day": 14},
+            },
+        }
+        assert result == expected

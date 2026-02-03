@@ -97,6 +97,7 @@ class DateValidator:
         Returns:
             dict with count (1 if found, 0 if not) and date (year, month, day or None)
         """
+        print(f"test: {text}")
         text = text.strip()
 
         # 英文月份格式 (三個部分): DD MMM YY, DD MMM YYYY, YYYY MMM DD
@@ -106,6 +107,7 @@ class DateValidator:
         )
         match = re.search(pattern_eng_month_3, text, re.IGNORECASE)
         if match:
+            print("match 英文月份")
             part1 = int(match.group(1))
             month_str = match.group(2)
             part3 = int(match.group(3))
@@ -128,6 +130,7 @@ class DateValidator:
         pattern_eng_month_2 = r"^([A-Za-z]{3})\s*[/\-\.\s]\s*(\d{2,4})$"
         match = re.search(pattern_eng_month_2, text, re.IGNORECASE)
         if match:
+            print("match 英文月份2")
             month_str = match.group(1)
             year = int(match.group(2))
             month = cls._parse_month_abbr(month_str)
@@ -145,6 +148,7 @@ class DateValidator:
         )
         match = re.search(pattern_mmmddyy, text, re.IGNORECASE)
         if match:
+            print("match MMM DD YY, MMM DD YYYY")
             month_str = match.group(1)
             day = int(match.group(2))
             year = int(match.group(3))
@@ -156,22 +160,11 @@ class DateValidator:
                 if cls.validate_date(year, month, day):
                     return cls._build_result(year, month, day)
 
-        # YY MM DD 格式 (2位數年份)
-        pattern_yymmdd = r"^(\d{2})\s*[/\-\.\s]\s*(\d{1,2})\s*[/\-\.\s]\s*(\d{1,2})$"
-        match = re.search(pattern_yymmdd, text)
-        if match:
-            year = int(match.group(1))
-            month = int(match.group(2))
-            day = int(match.group(3))
-            if year < 100:
-                year += 2000
-            if cls.validate_date(year, month, day):
-                return cls._build_result(year, month, day)
-
         # YYYY MM 格式 (無日期，預設 day=1)
         pattern_yyyymm = r"^(\d{4})\s*[/\-\.\s]\s*(\d{1,2})$"
         match = re.search(pattern_yyyymm, text)
         if match:
+            print("match YYYY MM")
             year = int(match.group(1))
             month = int(match.group(2))
             day = 1
@@ -182,6 +175,7 @@ class DateValidator:
         pattern_mmyyyy = r"^(\d{1,2})\s*[/\-\.\s]\s*(\d{4})$"
         match = re.search(pattern_mmyyyy, text)
         if match:
+            print("match MM YYYY")
             month = int(match.group(1))
             year = int(match.group(2))
             day = 1
@@ -192,6 +186,7 @@ class DateValidator:
         pattern_mmdd = r"^(\d{1,2})\s*[/\-\.\s]\s*(\d{1,2})$"
         match = re.search(pattern_mmdd, text)
         if match:
+            print("match MM DD")
             month = int(match.group(1))
             day = int(match.group(2))
             year = datetime.now().year
@@ -214,9 +209,10 @@ class DateValidator:
         # 西元年格式:
         # YYYY-MM-DD, YYYY/MM/DD, YYYY.MM.DD, YYYY MM DD 或
         # DD-MM-YYYY, DD/MM/YYYY, DD.MM.YYYY, DD MM YYYY
-        pattern_separated = r"(\d{1,4})\s*[/\-\.\s]\s*(\d{1,2})\s*[/\-\.\s]\s*(\d{1,4})"
+        pattern_separated = r"(\d{2,4})\s*[/\-\.\s]\s*(\d{2})\s*[/\-\.\s]\s*(\d{2,4})"
         match = re.search(pattern_separated, text)
         if match:
+            print("match 西元年格式")
             part1 = int(match.group(1))
             part2 = int(match.group(2))
             part3 = int(match.group(3))
@@ -227,6 +223,9 @@ class DateValidator:
                 year, month, day = part3, part2, part1
             else:  # 預設為年月日順序
                 year, month, day = part1, part2, part3
+
+            if year < 2000:
+                year += 2000
 
             if cls.validate_date(year, month, day):
                 return cls._build_result(year, month, day)
@@ -274,6 +273,19 @@ class DateValidator:
                 return cls._build_result(year, month, day)
             return cls._no_match_result()
 
+        # YY MM DD 格式 (2位數年份)
+        pattern_yymmdd = r"(\d{2})\s*[/\-\.\s]\s*(\d{2})\s*[/\-\.\s]\s*(\d{2})"
+        match = re.search(pattern_yymmdd, text)
+        if match:
+            print("match YY MM DD")
+            year = int(match.group(1))
+            month = int(match.group(2))
+            day = int(match.group(3))
+            if year < 100:
+                year += 2000
+            if cls.validate_date(year, month, day):
+                return cls._build_result(year, month, day)
+
         return cls._no_match_result()
 
     @classmethod
@@ -293,6 +305,47 @@ class DateValidator:
             }
 
     @classmethod
+    def _date_to_tuple(cls, date_dict: dict) -> tuple:
+        """將日期 dict 轉為 tuple 以便比較"""
+        return (date_dict["year"], date_dict["month"], date_dict["day"])
+
+    @classmethod
+    def _extract_all_dates(cls, text: str) -> list:
+        """從文字中提取所有日期，回傳日期 dict 列表"""
+        dates = []
+
+        # 日期模式: 支援各種分隔符的日期格式
+        # YYYY/MM/DD, DD/MM/YYYY, YYYYMMDD 等
+        date_patterns = [
+            r"\d{4}[/\-\.]\d{1,2}[/\-\.]\d{1,2}",  # YYYY/MM/DD
+            r"\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{4}",  # DD/MM/YYYY
+            r"\d{2}[/\-\.]\d{1,2}[/\-\.]\d{1,2}",  # YY/MM/DD
+            r"\d{8}",  # YYYYMMDD
+            r"\d{1,2}\s*/\s*\d{1,2}\s*/\s*\d{4}",  # DD / MM / YYYY (with spaces)
+            r"\d{1,2}\s*/\s*\d{1,2}\s*/\s*\d{2}",  # DD / MM / YY (with spaces)
+        ]
+
+        combined_pattern = "|".join(f"({p})" for p in date_patterns)
+        matches = re.finditer(combined_pattern, text)
+
+        for match in matches:
+            date_str = match.group(0)
+            result = cls.extract_date(date_str)
+            if result["count"] == 1:
+                # 檢查是否已存在相同日期
+                is_duplicate = False
+                for existing in dates:
+                    if cls._date_to_tuple(existing) == cls._date_to_tuple(
+                        result["date"]
+                    ):
+                        is_duplicate = True
+                        break
+                if not is_duplicate:
+                    dates.append(result["date"])
+
+        return dates
+
+    @classmethod
     def extract_multiple_dates(cls, text: str) -> dict:
         """
         從合併的文字中提取製造日期和有效日期。
@@ -300,11 +353,13 @@ class DateValidator:
         支援格式:
         - PD 或 "製造" 後跟隨製造日期 (Production Date)
         - BB 或 "有效" 後跟隨有效日期 (Best Before)
+        - 若無標示但有兩組日期，較舊為製造日期，較新為有效日期
 
         Args:
             text: OCR 辨識結果合併後的字串，例如:
                   '.F25226B 04:49 .PD: 14 / 08/2025 .BB: 14 / 08/2026'
                   '製造日期: 2025/08/14 有效日期: 2026/08/14'
+                  '2025/08/14 2026/08/14' (無標示，自動比較)
 
         Returns:
             dict with count and date containing production and expiration dates
@@ -312,6 +367,10 @@ class DateValidator:
         production_date = None
         expiration_date = None
         text_upper = text.upper()
+
+        # 檢查是否有關鍵字標示
+        has_pd_keyword = text_upper.find("PD") != -1 or text.find("製造") != -1
+        has_bb_keyword = text_upper.find("BB") != -1 or text.find("有效") != -1
 
         # 找製造日期: PD 或 "製造"
         pd_idx = text_upper.find("PD")
@@ -340,6 +399,23 @@ class DateValidator:
             result = cls.extract_date(after_bb)
             if result["count"] == 1:
                 expiration_date = result["date"]
+
+        # 如果沒有任何關鍵字標示，嘗試提取所有日期並比較
+        if not has_pd_keyword and not has_bb_keyword:
+            dates = cls._extract_all_dates(text)
+            if len(dates) >= 2:
+                # 比較日期，較舊的是製造日期，較新的是有效日期
+                date1_tuple = cls._date_to_tuple(dates[0])
+                date2_tuple = cls._date_to_tuple(dates[1])
+                if date1_tuple <= date2_tuple:
+                    production_date = dates[0]
+                    expiration_date = dates[1]
+                else:
+                    production_date = dates[1]
+                    expiration_date = dates[0]
+            elif len(dates) == 1:
+                # 只有一個日期，預設為有效日期
+                expiration_date = dates[0]
 
         # 根據找到的日期數量回傳結果
         if production_date and expiration_date:
