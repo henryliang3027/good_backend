@@ -298,12 +298,13 @@ class DateValidator:
         從合併的文字中提取製造日期和有效日期。
 
         支援格式:
-        - .PD 後跟隨製造日期 (Production Date)
-        - .BB 後跟隨有效日期 (Best Before)
+        - PD 或 "製造" 後跟隨製造日期 (Production Date)
+        - BB 或 "有效" 後跟隨有效日期 (Best Before)
 
         Args:
             text: OCR 辨識結果合併後的字串，例如:
                   '.F25226B 04:49 .PD: 14 / 08/2025 .BB: 14 / 08/2026'
+                  '製造日期: 2025/08/14 有效日期: 2026/08/14'
 
         Returns:
             dict with count and date containing production and expiration dates
@@ -312,20 +313,30 @@ class DateValidator:
         expiration_date = None
         text_upper = text.upper()
 
-        # 找 .PD 製造日期
-        pd_idx = text_upper.find(".PD")
+        # 找製造日期: PD 或 "製造"
+        pd_idx = text_upper.find("PD")
+        pd_cn_idx = text.find("製造")
         if pd_idx != -1:
-            # 從 .PD 後面開始提取日期
-            after_pd = text[pd_idx + 3 :]
+            after_pd = text[pd_idx + 2 :]
+            result = cls.extract_date(after_pd)
+            if result["count"] == 1:
+                production_date = result["date"]
+        elif pd_cn_idx != -1:
+            after_pd = text[pd_cn_idx + 2 :]
             result = cls.extract_date(after_pd)
             if result["count"] == 1:
                 production_date = result["date"]
 
-        # 找 .BB 有效日期
-        bb_idx = text_upper.find(".BB")
+        # 找有效日期: BB 或 "有效"
+        bb_idx = text_upper.find("BB")
+        bb_cn_idx = text.find("有效")
         if bb_idx != -1:
-            # 從 .BB 後面開始提取日期
-            after_bb = text[bb_idx + 3 :]
+            after_bb = text[bb_idx + 2 :]
+            result = cls.extract_date(after_bb)
+            if result["count"] == 1:
+                expiration_date = result["date"]
+        elif bb_cn_idx != -1:
+            after_bb = text[bb_cn_idx + 2 :]
             result = cls.extract_date(after_bb)
             if result["count"] == 1:
                 expiration_date = result["date"]

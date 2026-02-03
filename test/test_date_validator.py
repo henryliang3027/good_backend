@@ -367,3 +367,42 @@ class TestExtractMultipleDates:
         result = DateValidator.extract_multiple_dates(text)
         expected = {"count": 0, "date": None}
         assert result == expected
+
+    def test_chinese_pd_and_bb(self):
+        """測試中文關鍵字 製造 和 有效"""
+        text = "製造日期: 2025/08/14 有效日期: 2026/08/14"
+        result = DateValidator.extract_multiple_dates(text)
+        expected = {
+            "count": 2,
+            "date": {
+                "production": {"year": 2025, "month": 8, "day": 14},
+                "expiration": {"year": 2026, "month": 8, "day": 14},
+            },
+        }
+        assert result == expected
+
+    def test_chinese_only_pd(self):
+        """測試只有中文 製造"""
+        text = "製造日期: 2025/08/14"
+        result = DateValidator.extract_multiple_dates(text)
+        expected = {
+            "count": 1,
+            "date": {
+                "production": {"year": 2025, "month": 8, "day": 14},
+                "expiration": None,
+            },
+        }
+        assert result == expected
+
+    def test_chinese_only_bb(self):
+        """測試只有中文 有效"""
+        text = "有效日期: 2026/08/14"
+        result = DateValidator.extract_multiple_dates(text)
+        expected = {
+            "count": 1,
+            "date": {
+                "production": None,
+                "expiration": {"year": 2026, "month": 8, "day": 14},
+            },
+        }
+        assert result == expected
