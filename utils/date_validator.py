@@ -140,7 +140,9 @@ class DateValidator:
                     return cls._build_result(year, month, day)
 
         # MMM DD YY, MMM DD YYYY 格式
-        pattern_mmmddyy = r"^([A-Za-z]{3})\s*[/\-\.\s]\s*(\d{1,2})\s*[/\-\.\s]\s*(\d{2,4})$"
+        pattern_mmmddyy = (
+            r"^([A-Za-z]{3})\s*[/\-\.\s]\s*(\d{1,2})\s*[/\-\.\s]\s*(\d{2,4})$"
+        )
         match = re.search(pattern_mmmddyy, text, re.IGNORECASE)
         if match:
             month_str = match.group(1)
@@ -273,3 +275,85 @@ class DateValidator:
             return cls._no_match_result()
 
         return cls._no_match_result()
+
+    @classmethod
+    def extract_expiry_date(cls, text: str) -> dict:
+        result = cls.extract_date(text)
+        count = result["count"]
+        date = result["date"]
+        if count == 0:
+            return result
+        else:
+            return {
+                "count": 1,
+                "date": {
+                    "production": None,
+                    "expiration": date,
+                },
+            }
+
+    @classmethod
+    def extract_multiple_dates(cls, text: str) -> dict:
+        """
+        從合併的文字中提取製造日期和有效日期。
+
+        支援格式:
+        - .PD 後跟隨製造日期 (Production Date)
+        - .BB 後跟隨有效日期 (Best Before)
+
+        Args:
+            text: OCR 辨識結果合併後的字串，例如:
+                  '.F25226B 04:49 .PD: 14 / 08/2025 .BB: 14 / 08/2026'
+
+        Returns:
+            dict with count and date containing production and expiration dates
+        """
+        production_date = None
+        expiration_date = None
+        text_upper = text.upper()
+
+        # 找 .PD 製造日期
+        pd_idx = text_upper.find(".PD")
+        if pd_idx != -1:
+            # 從 .PD 後面開始提取日期
+            after_pd = text[pd_idx + 3 :]
+            result = cls.extract_date(after_pd)
+            if result["count"] == 1:
+                production_date = result["date"]
+
+        # 找 .BB 有效日期
+        bb_idx = text_upper.find(".BB")
+        if bb_idx != -1:
+            # 從 .BB 後面開始提取日期
+            after_bb = text[bb_idx + 3 :]
+            result = cls.extract_date(after_bb)
+            if result["count"] == 1:
+                expiration_date = result["date"]
+
+        # 根據找到的日期數量回傳結果
+        if production_date and expiration_date:
+            return {
+                "count": 2,
+                "date": {
+                    "production": production_date,
+                    "expiration": expiration_date,
+                },
+            }
+        elif production_date:
+            return {
+                "count": 1,
+                "date": {
+                    "production": production_date,
+                    "expiration": None,
+                },
+            }
+        elif expiration_date:
+            return {
+                "count": 1,
+                "date": {
+                    "production": None,
+                    "expiration": expiration_date,
+                },
+            }
+        else:
+            return {"count": 0, "date": None}

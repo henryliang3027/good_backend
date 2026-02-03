@@ -171,10 +171,61 @@ async def ocr_inference_base64(request: Base64ImageRequest):
         test = ""
         if len(output[0]["rec_texts"]) == 0:
             return JSONResponse(content={"count": 0, "date": None})
-        else:
+        elif len(output[0]["rec_texts"]) == 1:
             text = output[0]["rec_texts"][0]
+            result = DateValidator.extract_expiry_date(text)
+            return JSONResponse(content=result)
+        elif len(output[0]["rec_texts"]) > 1:
+            texts = output[0]["rec_texts"]
+            text = " ".join(texts)
+            result = DateValidator.extract_multiple_dates(text)
+            return JSONResponse(content=result)
 
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
+@app.post("/inventory_base64")
+async def inventory_base64(request: Base64ImageRequest):
+    try:
+        image_data = base64.b64decode(request.image_base64)
+        base64_image = f"data:image/jpeg;base64,{request.image_base64}"
+        result = inference(base64_image, "請統計圖中的商品")
+        return JSONResponse(content={"status": 1, "data": result})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/vl1_5_ocr_inference_base64")
+async def ocr_inference_base64(request: Base64ImageRequest):
+    tmp_path = None
+    try:
+        image_data = base64.b64decode(request.image_base64)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+            tmp.write(image_data)
+            tmp_path = tmp.name
+            logging.info(f"Saved base64 image to {tmp_path}")
+
+        output = ocr.predict(tmp_path)
+        print("OCR Result:", output)
+        for result in output:
+            print("OCR rec_texts Result:", output[0]["rec_texts"])
+        # output 範例: [{'rec_texts': ['2023/12/31'], 'rec_scores': [0.998]}]
+        test = ""
+        if len(output[0]["rec_texts"]) == 0:
+            return JSONResponse(content={"count": 0, "date": None})
+        elif len(output[0]["rec_texts"]) == 1:
+            text = output[0]["rec_texts"][0]
             result = DateValidator.extract_date(text)
+            return JSONResponse(content=result)
+        elif len(output[0]["rec_texts"]) > 1:
+            texts = output[0]["rec_texts"]
+            text = " ".join(texts)
+            result = DateValidator.extract_multiple_dates(text)
             return JSONResponse(content=result)
 
     except Exception as e:

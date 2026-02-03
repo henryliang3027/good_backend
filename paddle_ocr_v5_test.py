@@ -3,6 +3,7 @@ from paddleocr import PaddleOCR, PaddleOCRVL
 import re
 
 image_paths = [
+    "images/crop4.jpg",
     "images/img_00001.jpg",
     "images/img_00002.jpg",
     "images/img_00003.jpg",
@@ -29,4 +30,4 @@ for image_path in image_paths:
     end_time = time.time()
     print(f"Time elapse for {image_path}: {end_time - start_time:.3f} seconds")
     for result in output:
-        print(result["rec_texts"][0])
+        print(result["rec_texts"])
