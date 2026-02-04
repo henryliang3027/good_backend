@@ -254,7 +254,7 @@ class DateValidator:
                     month = int(date_str[2:4])
                     year = int(date_str[4:8])
 
-            else:  # YYYMMDD (民國年)
+            else:  # len == 7, YYYMMDD (民國年)
                 year = int(date_str[:3]) + cls.MINGUO_BASE_YEAR
                 month = int(date_str[3:5])
                 day = int(date_str[5:7])
@@ -312,6 +312,66 @@ class DateValidator:
     def _date_to_tuple(cls, date_dict: dict) -> tuple:
         """將日期 dict 轉為 tuple 以便比較"""
         return (date_dict["year"], date_dict["month"], date_dict["day"])
+
+    @classmethod
+    def _extract_6digit_string(cls, text: str) -> str | None:
+        """從文字中提取 6 位數字串"""
+        match = re.search(r"(\d{6})", text)
+        return match.group(1) if match else None
+
+    @classmethod
+    def _parse_6digit_date(cls, date_str: str, format_type: str) -> dict | None:
+        """
+        根據指定格式解析 6 位數日期字串
+
+        Args:
+            date_str: 6 位數字串
+            format_type: "YYMMDD" 或 "DDMMYY"
+
+        Returns:
+            日期 dict 或 None
+        """
+        if len(date_str) != 6:
+            return None
+
+        if format_type == "YYMMDD":
+            year = int(date_str[:2]) + 2000
+            month = int(date_str[2:4])
+            day = int(date_str[4:6])
+        else:  # DDMMYY
+            day = int(date_str[:2])
+            month = int(date_str[2:4])
+            year = int(date_str[4:6]) + 2000
+
+        if cls.validate_date(year, month, day):
+            return {"year": year, "month": month, "day": day}
+        return None
+
+    @classmethod
+    def _determine_6digit_format(cls, date_str: str) -> str:
+        """
+        判斷 6 位數日期的格式是 YYMMDD 還是 DDMMYY
+
+        比較前兩位和後兩位，取最接近今年的作為年份
+
+        Args:
+            date_str: 6 位數字串
+
+        Returns:
+            "YYMMDD" 或 "DDMMYY"
+        """
+        current_year = datetime.now().year
+        first_two = int(date_str[:2]) + 2000
+        last_two = int(date_str[4:6]) + 2000
+
+        diff_first = abs(first_two - current_year)
+        diff_last = abs(last_two - current_year)
+
+        # 選擇最接近今年的作為年份
+        if diff_last <= diff_first:
+            return "DDMMYY"
+        else:
+            return "YYMMDD"
 
     @classmethod
     def _extract_all_dates(cls, text: str) -> list:
@@ -384,45 +444,53 @@ class DateValidator:
             or text.find("有效") != -1
         )
 
-        # 找製造日期: PD, MFG 或 "製造"
+        # 找出關鍵字後的文字
         pd_idx = text_upper.find("PD")
         mfg_idx = text_upper.find("MFG")
         pd_cn_idx = text.find("製造")
-        if pd_idx != -1:
-            after_pd = text[pd_idx + 2 :]
-            result = cls.extract_date(after_pd)
-            if result["count"] == 1:
-                production_date = result["date"]
-        elif mfg_idx != -1:
-            after_mfg = text[mfg_idx + 3 :]
-            result = cls.extract_date(after_mfg)
-            if result["count"] == 1:
-                production_date = result["date"]
-        elif pd_cn_idx != -1:
-            after_pd = text[pd_cn_idx + 2 :]
-            result = cls.extract_date(after_pd)
-            if result["count"] == 1:
-                production_date = result["date"]
-
-        # 找有效日期: BB, EXP 或 "有效"
         bb_idx = text_upper.find("BB")
         exp_idx = text_upper.find("EXP")
         bb_cn_idx = text.find("有效")
+
+        # 取得製造日期後的文字
+        after_pd_text = None
+        if pd_idx != -1:
+            after_pd_text = text[pd_idx + 2 :]
+        elif mfg_idx != -1:
+            after_pd_text = text[mfg_idx + 3 :]
+        elif pd_cn_idx != -1:
+            after_pd_text = text[pd_cn_idx + 2 :]
+
+        # 取得有效日期後的文字
+        after_bb_text = None
         if bb_idx != -1:
-            after_bb = text[bb_idx + 2 :]
-            result = cls.extract_date(after_bb)
-            if result["count"] == 1:
-                expiration_date = result["date"]
+            after_bb_text = text[bb_idx + 2 :]
         elif exp_idx != -1:
-            after_exp = text[exp_idx + 3 :]
-            result = cls.extract_date(after_exp)
-            if result["count"] == 1:
-                expiration_date = result["date"]
+            after_bb_text = text[exp_idx + 3 :]
         elif bb_cn_idx != -1:
-            after_bb = text[bb_cn_idx + 2 :]
-            result = cls.extract_date(after_bb)
-            if result["count"] == 1:
-                expiration_date = result["date"]
+            after_bb_text = text[bb_cn_idx + 2 :]
+
+        # 檢查兩者是否都是 6 位數格式
+        pd_6digit = cls._extract_6digit_string(after_pd_text) if after_pd_text else None
+        bb_6digit = cls._extract_6digit_string(after_bb_text) if after_bb_text else None
+
+        if pd_6digit and bb_6digit:
+            # 兩者都是 6 位數，用有效日期判斷格式
+            format_type = cls._determine_6digit_format(bb_6digit)
+            print(f"Both 6-digit format detected, using {format_type}")
+            production_date = cls._parse_6digit_date(pd_6digit, format_type)
+            expiration_date = cls._parse_6digit_date(bb_6digit, format_type)
+        else:
+            # 一般情況，使用 extract_date
+            if after_pd_text:
+                result = cls.extract_date(after_pd_text)
+                if result["count"] == 1:
+                    production_date = result["date"]
+
+            if after_bb_text:
+                result = cls.extract_date(after_bb_text)
+                if result["count"] == 1:
+                    expiration_date = result["date"]
 
         # 如果沒有任何關鍵字標示，嘗試提取所有日期並比較
         if not has_pd_keyword and not has_bb_keyword:
