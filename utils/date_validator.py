@@ -24,6 +24,9 @@ class DateValidator:
         "DEC": 12,
     }
 
+    # 英文月份縮寫 regex pattern (從 MONTH_ABBR 動態產生)
+    MONTH_PATTERN = rf"({'|'.join(MONTH_ABBR.keys())})"
+
     @classmethod
     def _parse_month_abbr(cls, month_str: str) -> int:
         """將英文月份縮寫轉換為數字"""
@@ -103,7 +106,7 @@ class DateValidator:
         # 英文月份格式 (三個部分): DD MMM YY, DD MMM YYYY, YYYY MMM DD
         # 分隔符: '.', '-', '/', 空格
         pattern_eng_month_3 = (
-            r"(\d{1,4})\s*[/\-\.\s]\s*([A-Za-z]{3})\s*[/\-\.\s]\s*(\d{2,4})"
+            rf"(\d{{1,4}})\s*[/\-\.\s]\s*{cls.MONTH_PATTERN}\s*[/\-\.\s]\s*(\d{{2,4}})"
         )
         match = re.search(pattern_eng_month_3, text, re.IGNORECASE)
         if match:
@@ -127,7 +130,7 @@ class DateValidator:
                     return cls._build_result(year, month, day)
 
         # 英文月份格式 (兩個部分): MMM YYYY, MMM YY (無日期，預設 day=1)
-        pattern_eng_month_2 = r"^([A-Za-z]{3})\s*[/\-\.\s]\s*(\d{2,4})$"
+        pattern_eng_month_2 = rf"^{cls.MONTH_PATTERN}\s*[/\-\.\s]\s*(\d{{2,4}})$"
         match = re.search(pattern_eng_month_2, text, re.IGNORECASE)
         if match:
             print("match 英文月份2")
@@ -143,9 +146,7 @@ class DateValidator:
                     return cls._build_result(year, month, day)
 
         # MMM DD YY, MMM DD YYYY 格式
-        pattern_mmmddyy = (
-            r"^([A-Za-z]{3})\s*[/\-\.\s]\s*(\d{1,2})\s*[/\-\.\s]\s*(\d{2,4})$"
-        )
+        pattern_mmmddyy = rf"^{cls.MONTH_PATTERN}\s*[/\-\.\s]\s*(\d{{1,2}})\s*[/\-\.\s]\s*(\d{{2,4}})$"
         match = re.search(pattern_mmmddyy, text, re.IGNORECASE)
         if match:
             print("match MMM DD YY, MMM DD YYYY")
@@ -197,6 +198,7 @@ class DateValidator:
         pattern_minguo = r"^(\d{3})\s*[/\-\.\s]\s*(\d{1,2})\s*[/\-\.\s]\s*(\d{1,2})$"
         match = re.search(pattern_minguo, text)
         if match:
+            print("match 民國年")
             minguo_year = int(match.group(1))
             if 1 <= minguo_year <= 200:
                 year = minguo_year + cls.MINGUO_BASE_YEAR
@@ -235,6 +237,7 @@ class DateValidator:
         pattern_no_sep = r"(\d{7,8})"
         match = re.search(pattern_no_sep, text)
         if match:
+            print("match 無分隔符格式")
             date_str = match.group(1)
 
             if len(date_str) == 8:
@@ -263,15 +266,16 @@ class DateValidator:
             return cls._no_match_result()
 
         # 西元日期格式有部分缺損: YYYY-MMDD
-        pattern_partial = r"(\d{4})\s*[/\-\.:\s]?\s*(\d{1,2})\s*[/\-\.:\s]?\s*(\d{1,2})"
-        match = re.search(pattern_partial, text)
-        if match:
-            year = int(match.group(1))
-            month = int(match.group(2))
-            day = int(match.group(3))
-            if cls.validate_date(year, month, day):
-                return cls._build_result(year, month, day)
-            return cls._no_match_result()
+        # pattern_partial = r"(\d{4})\s*[/\-\.:\s]?\s*(\d{1,2})\s*[/\-\.:\s]?\s*(\d{1,2})"
+        # match = re.search(pattern_partial, text)
+        # if match:
+        #     print("match 西元日期格式有部分缺損")
+        #     year = int(match.group(1))
+        #     month = int(match.group(2))
+        #     day = int(match.group(3))
+        #     if cls.validate_date(year, month, day):
+        #         return cls._build_result(year, month, day)
+        #     return cls._no_match_result()
 
         # YY MM DD 格式 (2位數年份)
         pattern_yymmdd = r"(\d{2})\s*[/\-\.\s]\s*(\d{2})\s*[/\-\.\s]\s*(\d{2})"
@@ -351,8 +355,8 @@ class DateValidator:
         從合併的文字中提取製造日期和有效日期。
 
         支援格式:
-        - PD 或 "製造" 後跟隨製造日期 (Production Date)
-        - BB 或 "有效" 後跟隨有效日期 (Best Before)
+        - PD, MFG 或 "製造" 後跟隨製造日期 (Production Date / Manufacturing Date)
+        - BB, EXP 或 "有效" 後跟隨有效日期 (Best Before / Expiration Date)
         - 若無標示但有兩組日期，較舊為製造日期，較新為有效日期
 
         Args:
@@ -369,15 +373,29 @@ class DateValidator:
         text_upper = text.upper()
 
         # 檢查是否有關鍵字標示
-        has_pd_keyword = text_upper.find("PD") != -1 or text.find("製造") != -1
-        has_bb_keyword = text_upper.find("BB") != -1 or text.find("有效") != -1
+        has_pd_keyword = (
+            text_upper.find("PD") != -1
+            or text_upper.find("MFG") != -1
+            or text.find("製造") != -1
+        )
+        has_bb_keyword = (
+            text_upper.find("BB") != -1
+            or text_upper.find("EXP") != -1
+            or text.find("有效") != -1
+        )
 
-        # 找製造日期: PD 或 "製造"
+        # 找製造日期: PD, MFG 或 "製造"
         pd_idx = text_upper.find("PD")
+        mfg_idx = text_upper.find("MFG")
         pd_cn_idx = text.find("製造")
         if pd_idx != -1:
             after_pd = text[pd_idx + 2 :]
             result = cls.extract_date(after_pd)
+            if result["count"] == 1:
+                production_date = result["date"]
+        elif mfg_idx != -1:
+            after_mfg = text[mfg_idx + 3 :]
+            result = cls.extract_date(after_mfg)
             if result["count"] == 1:
                 production_date = result["date"]
         elif pd_cn_idx != -1:
@@ -386,12 +404,18 @@ class DateValidator:
             if result["count"] == 1:
                 production_date = result["date"]
 
-        # 找有效日期: BB 或 "有效"
+        # 找有效日期: BB, EXP 或 "有效"
         bb_idx = text_upper.find("BB")
+        exp_idx = text_upper.find("EXP")
         bb_cn_idx = text.find("有效")
         if bb_idx != -1:
             after_bb = text[bb_idx + 2 :]
             result = cls.extract_date(after_bb)
+            if result["count"] == 1:
+                expiration_date = result["date"]
+        elif exp_idx != -1:
+            after_exp = text[exp_idx + 3 :]
+            result = cls.extract_date(after_exp)
             if result["count"] == 1:
                 expiration_date = result["date"]
         elif bb_cn_idx != -1:

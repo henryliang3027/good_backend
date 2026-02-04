@@ -168,7 +168,6 @@ async def ocr_inference_base64(request: Base64ImageRequest):
         # for result in output:
         #     print("OCR rec_texts Result:", output[0]["rec_texts"])
         # output 範例: [{'rec_texts': ['2023/12/31'], 'rec_scores': [0.998]}]
-        test = ""
         if len(output[0]["rec_texts"]) == 0:
             return JSONResponse(content={"count": 0, "date": None})
         elif len(output[0]["rec_texts"]) == 1:
