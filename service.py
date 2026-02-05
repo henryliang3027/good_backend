@@ -89,6 +89,7 @@ ocr = PaddleOCR(
 
 class Base64ImageRequest(BaseModel):
     image_base64: str
+    question: str = "請統計圖中的商品"
 
 
 SYSTEM_PROMPT = """你是零售貨架的商品統計助手。
@@ -147,7 +148,7 @@ async def inventory_base64(request: Base64ImageRequest):
     try:
         # image_data = base64.b64decode(request.image_base64)
         base64_image = f"data:image/jpeg;base64,{request.image_base64}"
-        result = inference(base64_image, "請統計圖中的商品")
+        result = inference(base64_image, request.question)
         return JSONResponse(content={"status": 1, "data": result})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -188,17 +189,6 @@ async def ocr_inference_base64(request: Base64ImageRequest):
     finally:
         if tmp_path and os.path.exists(tmp_path):
             os.unlink(tmp_path)
-
-
-@app.post("/inventory_base64")
-async def inventory_base64(request: Base64ImageRequest):
-    try:
-        image_data = base64.b64decode(request.image_base64)
-        base64_image = f"data:image/jpeg;base64,{request.image_base64}"
-        result = inference(base64_image, "請統計圖中的商品")
-        return JSONResponse(content={"status": 1, "data": result})
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/vl1_5_ocr_inference_base64")
