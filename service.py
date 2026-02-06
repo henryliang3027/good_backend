@@ -11,6 +11,7 @@ import signal
 import time
 from contextlib import asynccontextmanager
 from openai import OpenAI
+import ollama
 
 from utils.date_validator import DateValidator
 
@@ -135,6 +136,21 @@ def inference(base64_image, question):
     return response.choices[0].message.content
 
 
+def glm_ocr_ollama(base64_image):
+    response = ollama.chat(
+        model="glm-ocr-8k:latest",
+        messages=[
+            {
+                "role": "user",
+                "content": "Text Recognition:",
+                "images": [base64_image],
+            }
+        ],
+    )
+
+    return response["message"]["content"]
+
+
 @app.get("/")
 async def root():
     return {
@@ -191,32 +207,26 @@ async def ocr_inference_base64(request: Base64ImageRequest):
             os.unlink(tmp_path)
 
 
-@app.post("/vl1_5_ocr_inference_base64")
-async def ocr_inference_base64(request: Base64ImageRequest):
+@app.post("/glm_ocr_inference_base64")
+async def glm_ocr_inference_base64(request: Base64ImageRequest):
     tmp_path = None
     try:
-        image_data = base64.b64decode(request.image_base64)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
-            tmp.write(image_data)
-            tmp_path = tmp.name
-            logging.info(f"Saved base64 image to {tmp_path}")
-
-        output = ocr.predict(tmp_path)
+        output = glm_ocr_ollama(request.image_base64)
         print("OCR Result:", output)
-        for result in output:
-            print("OCR rec_texts Result:", output[0]["rec_texts"])
+
+        elements = output.split("\n")
+
         # output 範例: [{'rec_texts': ['2023/12/31'], 'rec_scores': [0.998]}]
         test = ""
-        if len(output[0]["rec_texts"]) == 0:
+        if len(elements) == 0:
             return JSONResponse(content={"count": 0, "date": None})
-        elif len(output[0]["rec_texts"]) == 1:
-            text = output[0]["rec_texts"][0]
-            result = DateValidator.extract_date(text)
+        elif len(elements) == 1:
+            result = DateValidator.extract_expiry_date(output)
+            print(f"1 result:{result}")
             return JSONResponse(content=result)
-        elif len(output[0]["rec_texts"]) > 1:
-            texts = output[0]["rec_texts"]
-            text = " ".join(texts)
-            result = DateValidator.extract_multiple_dates(text)
+        elif len(elements) > 1:
+            result = DateValidator.extract_multiple_dates(output)
+            print(f"2 result:{result}")
             return JSONResponse(content=result)
 
     except Exception as e:
