@@ -1,7 +1,7 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from paddleocr import PaddleOCR
+# from paddleocr import PaddleOCR
 import tempfile
 import os
 import logging
@@ -81,11 +81,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-ocr = PaddleOCR(
-    use_doc_orientation_classify=False,
-    use_doc_unwarping=False,
-    use_textline_orientation=False,
-)
+# ocr = PaddleOCR(
+#     use_doc_orientation_classify=False,
+#     use_doc_unwarping=False,
+#     use_textline_orientation=False,
+# )
 
 
 class Base64ImageRequest(BaseModel):
@@ -138,7 +138,7 @@ def inference(base64_image, question):
 
 def glm_ocr_ollama(base64_image):
     response = ollama.chat(
-        model="glm-ocr-8k:latest",
+        model="glm-ocr:q8_0",
         messages=[
             {
                 "role": "user",
@@ -170,41 +170,41 @@ async def inventory_base64(request: Base64ImageRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/ocr_inference_base64")
-async def ocr_inference_base64(request: Base64ImageRequest):
-    tmp_path = None
-    try:
-        image_data = base64.b64decode(request.image_base64)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
-            tmp.write(image_data)
-            tmp_path = tmp.name
-            logging.info(f"Saved base64 image to {tmp_path}")
+# @app.post("/ocr_inference_base64")
+# async def ocr_inference_base64(request: Base64ImageRequest):
+#     tmp_path = None
+#     try:
+#         image_data = base64.b64decode(request.image_base64)
+#         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+#             tmp.write(image_data)
+#             tmp_path = tmp.name
+#             logging.info(f"Saved base64 image to {tmp_path}")
 
-        output = ocr.predict(tmp_path)
-        # print("OCR Result:", output)
-        # for result in output:
-        #     print("OCR rec_texts Result:", output[0]["rec_texts"])
-        # output 範例: [{'rec_texts': ['2023/12/31'], 'rec_scores': [0.998]}]
-        if len(output[0]["rec_texts"]) == 0:
-            return JSONResponse(content={"count": 0, "date": None})
-        elif len(output[0]["rec_texts"]) == 1:
-            print("text length is 1")
-            text = output[0]["rec_texts"][0]
-            result = DateValidator.extract_expiry_date(text)
-            return JSONResponse(content=result)
-        elif len(output[0]["rec_texts"]) > 1:
-            texts = output[0]["rec_texts"]
-            print(f'text length is ${output[0]["rec_texts"]}')
-            text = " ".join(texts)
-            result = DateValidator.extract_multiple_dates(text)
-            return JSONResponse(content=result)
+#         output = ocr.predict(tmp_path)
+#         # print("OCR Result:", output)
+#         # for result in output:
+#         #     print("OCR rec_texts Result:", output[0]["rec_texts"])
+#         # output 範例: [{'rec_texts': ['2023/12/31'], 'rec_scores': [0.998]}]
+#         if len(output[0]["rec_texts"]) == 0:
+#             return JSONResponse(content={"count": 0, "date": None})
+#         elif len(output[0]["rec_texts"]) == 1:
+#             print("text length is 1")
+#             text = output[0]["rec_texts"][0]
+#             result = DateValidator.extract_expiry_date(text)
+#             return JSONResponse(content=result)
+#         elif len(output[0]["rec_texts"]) > 1:
+#             texts = output[0]["rec_texts"]
+#             print(f'text length is ${output[0]["rec_texts"]}')
+#             text = " ".join(texts)
+#             result = DateValidator.extract_multiple_dates(text)
+#             return JSONResponse(content=result)
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
 
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+#     finally:
+#         if tmp_path and os.path.exists(tmp_path):
+#             os.unlink(tmp_path)
 
 
 @app.post("/glm_ocr_inference_base64")
