@@ -16,6 +16,7 @@ from ultralytics import YOLO
 from sentence_transformers import SentenceTransformer
 from openai import OpenAI
 import subprocess
+from utils.date_validator import DateValidator
 
 # ========== Model & DB Config ==========
 BOTTLE_CLASS_ID = 39
@@ -298,32 +299,28 @@ async def inventory_base64(request: Base64ImageRequest):
 
 @app.post("/glm_ocr_inference_base64")
 async def glm_ocr_inference_base64(request: Base64ImageRequest):
-    tmp_path = None
+    output = ""
+
     try:
         output = glm_ocr_ollama(request.image_base64)
-        print("OCR Result:", output)
-
-        elements = output.split("\n")
-
-        # output 範例: [{'rec_texts': ['2023/12/31'], 'rec_scores': [0.998]}]
-        test = ""
-        if len(elements) == 0:
-            return JSONResponse(content={"count": 0, "date": None})
-        elif len(elements) == 1:
-            result = DateValidator.extract_expiry_date(output)
-            print(f"1 result:{result}")
-            return JSONResponse(content=result)
-        elif len(elements) > 1:
-            result = DateValidator.extract_multiple_dates(output)
-            print(f"2 result:{result}")
-            return JSONResponse(content=result)
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+    print("OCR Result:", output)
+
+    elements = output.split("\n")
+
+    if len(elements) == 0:
+        return JSONResponse(content={"count": 0, "date": None})
+    elif len(elements) == 1:
+        result = DateValidator.extract_expiry_date(output)
+        print(f"1 result:{result}")
+        return JSONResponse(content=result)
+    elif len(elements) > 1:
+        result = DateValidator.extract_multiple_dates(output)
+        print(f"2 result:{result}")
+        return JSONResponse(content=result)
+
 
 
 
