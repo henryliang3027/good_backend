@@ -4,10 +4,12 @@ import io
 import time
 from collections import Counter
 from contextlib import asynccontextmanager
-
+from datetime import datetime
+import signal
 import numpy as np
 import chromadb
 import ollama
+from PIL import ImageDraw, ImageFont
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -21,7 +23,7 @@ from utils.date_validator import DateValidator
 # ========== Model & DB Config ==========
 BOTTLE_CLASS_ID = 39
 OLLAMA_MODEL = "ministral-3:3b"
-CONF_THRESHOLD = 0.5
+CONF_THRESHOLD = 0.8
 
 # --- Cosine 門檻值建議 ---
 # 0.0 ~ 0.2: 極度相似 (同一產品)
@@ -105,6 +107,7 @@ def start_llama_server():
         LLAMA_SERVER_CMD,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
+        start_new_session=True,  # 建立獨立 process group
     )
     # 等待 llama-server 啟動
     time.sleep(5)
@@ -115,13 +118,24 @@ def stop_llama_server():
     global llama_process
     if llama_process:
         print(f"Stopping llama-server (PID: {llama_process.pid})...")
-        llama_process.terminate()
         try:
+            os.killpg(os.getpgid(llama_process.pid), signal.SIGTERM)
             llama_process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            llama_process.kill()
+        except (subprocess.TimeoutExpired, ProcessLookupError):
+            try:
+                os.killpg(os.getpgid(llama_process.pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         print("llama-server stopped.")
         llama_process = None
+
+
+def _signal_handler(sig, frame):
+    stop_llama_server()
+    raise SystemExit(0)
+
+signal.signal(signal.SIGINT, _signal_handler)
+signal.signal(signal.SIGTERM, _signal_handler)
 
 
 @asynccontextmanager
@@ -161,52 +175,97 @@ class Base64ImageRequest(BaseModel):
     question: str = "請統計圖中的商品"
 
 
-
-def glm_ocr_ollama(base64_image):
-    response = ollama.chat(
-        model="glm-ocr:q8_0",
-        messages=[
-            {
-                "role": "user",
-                "content": "Text Recognition:",
-                "images": [base64_image],
-            }
-        ],
-    )
-
-    return response["message"]["content"]
-
 # ========== Helper Functions ==========
+
+DEBUG_DIR = "detected_bottle"
+_FONT_PATH = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+_debug_font = ImageFont.truetype(_FONT_PATH, size=14)
 
 def detect_and_crop_bottles(pil_image: Image.Image):
     results = yolo_model(pil_image, conf=CONF_THRESHOLD, verbose=False)
     cropped_images = []
+    boxes_found = []
+
     for result in results:
         for box in result.boxes:
             if int(box.cls[0]) == BOTTLE_CLASS_ID:
                 x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
+                conf = float(box.conf[0])
                 cropped_images.append(pil_image.crop((x1, y1, x2, y2)))
-    return cropped_images
+                boxes_found.append((x1, y1, x2, y2, conf))
 
-def match_with_chroma(pil_image: Image.Image):
+    # Debug: 為每張輸入圖建立資料夾，存原圖 bbox 標註 + 各 crop
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    debug_folder = os.path.join(DEBUG_DIR, timestamp)
+    if boxes_found:
+        os.makedirs(debug_folder, exist_ok=True)
+
+        # 儲存原始輸入圖
+        pil_image.save(os.path.join(debug_folder, "input.jpg"))
+
+        # 儲存原圖並標上 bbox
+        overview_img = pil_image.copy()
+        draw = ImageDraw.Draw(overview_img)
+        for i, (x1, y1, x2, y2, conf) in enumerate(boxes_found):
+            draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
+            draw.text((x1, max(0, y1 - 15)), f"#{i} {conf:.2f}", fill="red", font=_debug_font)
+        overview_img.save(os.path.join(debug_folder, "overview.jpg"))
+
+        # 儲存所有 cropped bottle 原圖
+        for i, crop in enumerate(cropped_images):
+            crop.save(os.path.join(debug_folder, f"crop_{i:02d}_raw.jpg"))
+
+        print(f"[DEBUG] 偵測到 {len(boxes_found)} 個瓶子，debug 資料夾: {debug_folder}")
+
+    return cropped_images, debug_folder
+
+
+def match_with_chroma(pil_image: Image.Image, debug_folder: str, crop_index: int):
     """取代原本的 .pt 比對，改用 ChromaDB 查詢"""
     img_emb = clip_model.encode(pil_image).tolist()
-    
+
+    # 查詢資料庫所有商品距離
+    total = collection.count()
+    all_results = collection.query(
+        query_embeddings=[img_emb],
+        n_results=max(total, 1),
+        include=["metadatas", "distances"]
+    )
+
+    distances = list(zip(all_results['metadatas'][0], all_results['distances'][0]))
+
+    # [DEBUG] 印出距離
+    print(f"[DEBUG] crop #{crop_index} 與資料庫所有商品的距離:")
+    for meta, dist in distances:
+        print(f"  {meta.get('display_name','')}: {dist:.4f}")
+
+    # Debug: 將 crop 圖片加上各商品 distance 標註後儲存
+    if debug_folder:
+        crop_debug = pil_image.copy()
+        draw = ImageDraw.Draw(crop_debug)
+        line_height = 14
+        y_offset = 4
+        for meta, dist in distances:
+            name = meta.get('display_name', '')
+            text = f"{name}: {dist:.4f}"
+            bbox = draw.textbbox((4, y_offset), text, font=_debug_font)
+            draw.rectangle(bbox, fill="white")
+            draw.text((4, y_offset), text, fill="red", font=_debug_font)
+            y_offset += line_height
+        crop_debug.save(os.path.join(debug_folder, f"crop_{crop_index:02d}.jpg"))
+
+    # 取最近一筆
     results = collection.query(
         query_embeddings=[img_emb],
         n_results=1,
         include=["metadatas", "distances"]
     )
 
-    print(f"result: {results}")
-    
     if not results['ids'][0]:
         return "未知商品"
-    
-    dist = results['distances'][0][0]
+
     metadata = results['metadatas'][0][0]
-    
-    return f"{metadata['color']}{metadata['display_name']}"
+    return f"{metadata['display_name']}"
 
 # ========== CRUD Endpoints (管理資料庫) ==========
 
@@ -258,18 +317,18 @@ async def inventory_base64(request: Base64ImageRequest):
         raise HTTPException(status_code=400, detail="圖片解碼失敗")
 
     # 2. YOLO 偵測與裁切
-    crops = detect_and_crop_bottles(pil_image)
+    crops, debug_folder = detect_and_crop_bottles(pil_image)
     if not crops:
         return {"status": 1, "data": "貨架上看起來沒有瓶子。"}
 
     # 3. ChromaDB 向量比對
-    detected_names = [match_with_chroma(img) for img in crops]
+    detected_names = [match_with_chroma(img, debug_folder, i) for i, img in enumerate(crops)]
     counts = dict(Counter(detected_names))
     
     # 4. 組合成文字給 Ollama
     scan_list_str = "\n".join([f"- {k}: {v} 瓶" for k, v in counts.items()])
     print(f"=====SYSTEM_PROMPT=====")
-    print(f"{SYSTEM_PROMPT_TEMPLATE.format(scan_list=scan_list_str)}")
+    print(f"{scan_list_str}")
     print(f"==========")
 
     # 5. llama.cpp 推理
@@ -296,6 +355,20 @@ async def inventory_base64(request: Base64ImageRequest):
 
 
 
+def glm_ocr_ollama(base64_image):
+    response = ollama.chat(
+        model="glm-ocr:q8_0",
+        messages=[
+            {
+                "role": "user",
+                "content": "Text Recognition:",
+                "images": [base64_image],
+            }
+        ],
+    )
+
+    return response["message"]["content"]
+
 
 @app.post("/glm_ocr_inference_base64")
 async def glm_ocr_inference_base64(request: Base64ImageRequest):
@@ -320,8 +393,6 @@ async def glm_ocr_inference_base64(request: Base64ImageRequest):
         result = DateValidator.extract_multiple_dates(output)
         print(f"2 result:{result}")
         return JSONResponse(content=result)
-
-
 
 
 if __name__ == "__main__":
