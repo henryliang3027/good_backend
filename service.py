@@ -17,6 +17,7 @@ from PIL import Image
 from ultralytics import YOLO
 from sentence_transformers import SentenceTransformer
 from openai import OpenAI
+from rapidfuzz import process as fuzz_process, fuzz
 import subprocess
 from utils.date_validator import DateValidator
 
@@ -30,6 +31,10 @@ CONF_THRESHOLD = 0.8
 # 0.2 ~ 0.35: 相似 (同系列不同角度)
 # > 0.35: 視為未知商品
 COSINE_THRESHOLD = 0.35
+
+# OCR + Fuzzy 比對後的 CLIP 驗證門檻
+# 模糊比對找到候選後，用 CLIP cosine distance 做最終確認
+FUZZY_CLIP_THRESHOLD = 0.15
 
 class Base64ImageRequest(BaseModel):
     image_base64: str
@@ -220,71 +225,146 @@ def detect_and_crop_bottles(pil_image: Image.Image):
     return cropped_images, debug_folder
 
 
-def match_with_chroma(pil_image: Image.Image, debug_folder: str, crop_index: int):
-    """取代原本的 .pt 比對，改用 ChromaDB 查詢"""
+def fuzzy_match_ocr_to_db(ocr_text: str):
+    """
+    從 DB 取出所有 brand+flavor，用 rapidfuzz 模糊比對 OCR 文字，
+    回傳最符合的 DB item ID（即 brand+flavor 字串）。
+    處理形近字錯誤，例如「線→綠」、「古→甘」。
+    """
+    all_items = collection.get(include=["metadatas"])
+    if not all_items['ids']:
+        return None
+
+    # 建立 {id: "brand+flavor"} 候選字典
+    candidates = {}
+    for item_id, meta in zip(all_items['ids'], all_items['metadatas']):
+        brand = meta.get('brand', '')
+        flavor = meta.get('flavor', '')
+        candidates[item_id] = f"{brand}{flavor}"
+
+    # partial_ratio 對形近字和部分匹配效果最好
+    result = fuzz_process.extractOne(
+        ocr_text,
+        candidates,
+        scorer=fuzz.partial_ratio,
+        score_cutoff=50,
+    )
+
+    if result is None:
+        print(f"[Fuzzy] 無法匹配 OCR 文字: {repr(ocr_text[:60])}")
+        return None
+
+    _, score, matched_id = result
+    print(f"[Fuzzy] OCR 文字匹配 -> '{matched_id}' (score={score:.1f})")
+    return matched_id
+
+
+def match_bottle(pil_image: Image.Image, debug_folder: str, crop_index: int):
+    """
+    新版比對流程：
+    1. CLIP encode crop 取得向量
+    2. GLM OCR 辨識標籤文字
+    3. rapidfuzz 模糊比對 DB 的 brand+flavor，找出候選商品
+    4. 取 DB 該筆的 CLIP cosine distance，< FUZZY_CLIP_THRESHOLD 才確認命中
+    """
+    # Step 1: CLIP encode
     img_emb = clip_model.encode(pil_image).tolist()
 
-    # 查詢資料庫所有商品距離
+    # Step 2: 查詢 DB 所有商品距離（供 debug 及後續驗證用）
     total = collection.count()
     all_results = collection.query(
         query_embeddings=[img_emb],
         n_results=max(total, 1),
         include=["metadatas", "distances"]
     )
-
+    id_dist_map = {
+        item_id: dist
+        for item_id, dist in zip(all_results['ids'][0], all_results['distances'][0])
+    }
     distances = list(zip(all_results['metadatas'][0], all_results['distances'][0]))
 
-    # [DEBUG] 印出距離
-    print(f"[DEBUG] crop #{crop_index} 與資料庫所有商品的距離:")
+    print(f"[DEBUG] crop #{crop_index} CLIP 距離:")
     for meta, dist in distances:
-        print(f"  {meta.get('display_name','')}: {dist:.4f}")
+        label = f"{meta.get('brand','')}{meta.get('flavor','')}"
+        print(f"  {label}: {dist:.4f}")
 
-    # Debug: 將 crop 圖片加上各商品 distance 標註後儲存
+    # Step 3: GLM OCR
+    buf = io.BytesIO()
+    pil_image.save(buf, format="JPEG")
+    crop_b64 = base64.b64encode(buf.getvalue()).decode()
+    try:
+        ocr_text = glm_ocr_ollama(crop_b64)
+        print(f"[OCR] crop #{crop_index}: {repr(ocr_text[:80])}")
+    except Exception as e:
+        print(f"[OCR] crop #{crop_index} 失敗: {e}")
+        ocr_text = ""
+
+    # Step 4: Fuzzy match OCR 文字 -> 候選 DB ID
+    matched_id = fuzzy_match_ocr_to_db(ocr_text) if ocr_text else None
+
+    # Step 5: CLIP 驗證 cosine distance < FUZZY_CLIP_THRESHOLD
+    if matched_id is not None:
+        cosine_dist = id_dist_map.get(matched_id)
+        print(f"[Verify] '{matched_id}' CLIP distance = {cosine_dist:.4f} (threshold={FUZZY_CLIP_THRESHOLD})")
+        if cosine_dist is not None and cosine_dist < FUZZY_CLIP_THRESHOLD:
+            matched_name = matched_id  # DB id == brand+flavor
+        else:
+            print(f"[Verify] CLIP 驗證未通過，標記為未知商品")
+            matched_name = "未知商品"
+    else:
+        matched_name = "未知商品"
+
+    # Debug: 將 crop 圖片標註距離後儲存
     if debug_folder:
         crop_debug = pil_image.copy()
         draw = ImageDraw.Draw(crop_debug)
         line_height = 14
         y_offset = 4
         for meta, dist in distances:
-            name = meta.get('display_name', '')
-            text = f"{name}: {dist:.4f}"
+            name = f"{meta.get('brand','')}{meta.get('flavor','')}"
+            marker = " <--" if name == matched_name else ""
+            text = f"{name}: {dist:.4f}{marker}"
             bbox = draw.textbbox((4, y_offset), text, font=_debug_font)
             draw.rectangle(bbox, fill="white")
-            draw.text((4, y_offset), text, fill="red", font=_debug_font)
+            color = "green" if marker else "red"
+            draw.text((4, y_offset), text, fill=color, font=_debug_font)
             y_offset += line_height
+        # 也標上 OCR 結果摘要
+        ocr_summary = ocr_text.replace("\n", " ")[:50]
+        draw.text((4, y_offset + 4), f"OCR: {ocr_summary}", fill="blue", font=_debug_font)
         crop_debug.save(os.path.join(debug_folder, f"crop_{crop_index:02d}.jpg"))
 
-    # 取最近一筆
-    results = collection.query(
-        query_embeddings=[img_emb],
-        n_results=1,
-        include=["metadatas", "distances"]
-    )
-
-    if not results['ids'][0]:
-        return "未知商品"
-
-    metadata = results['metadatas'][0][0]
-    return f"{metadata['display_name']}"
+    return matched_name
 
 # ========== CRUD Endpoints (管理資料庫) ==========
 
 @app.post("/db/add", summary="[CRUD] 新增飲料特徵到資料庫")
 async def add_to_db(
-    name: str = Form(...),
+    brand: str = Form(...),
+    flavor: str = Form(...),
     color: str = Form(""),
     file: UploadFile = File(...)
 ):
-    """上傳一張 crop 好的瓶子，存入 ChromaDB"""
+    """上傳一張 crop 好的瓶子，存入 ChromaDB。
+
+    - brand: 品牌，例如「茶裏王」
+    - flavor: 口味，例如「台式綠茶」
+    - color: 瓶身顏色，例如「黃色」
+    """
+    item_id = f"{brand}{flavor}"  # 以 brand+flavor 作為唯一 ID
     image = Image.open(file.file).convert("RGB")
     embedding = clip_model.encode(image).tolist()
-    
+
     collection.upsert(
-        ids=[name], # 以品名作為唯一 ID
+        ids=[item_id],
         embeddings=[embedding],
-        metadatas=[{"display_name": name, "color": color}]
+        metadatas=[{
+            "brand": brand,
+            "flavor": flavor,
+            "color": color,
+        }]
     )
-    return {"status": "success", "message": f"已存入: {color}{name}"}
+    return {"status": "success", "message": f"已存入: {brand} {flavor} ({color})"}
 
 @app.get("/db/list", summary="[CRUD] 列出目前所有商品")
 async def list_db():
@@ -321,8 +401,8 @@ async def inventory_base64(request: Base64ImageRequest):
     if not crops:
         return {"status": 1, "data": "貨架上看起來沒有瓶子。"}
 
-    # 3. ChromaDB 向量比對
-    detected_names = [match_with_chroma(img, debug_folder, i) for i, img in enumerate(crops)]
+    # 3. OCR + Fuzzy + CLIP 比對
+    detected_names = [match_bottle(img, debug_folder, i) for i, img in enumerate(crops)]
     counts = dict(Counter(detected_names))
     
     # 4. 組合成文字給 Ollama
