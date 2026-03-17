@@ -4,32 +4,42 @@ import io
 import time
 from collections import Counter
 from contextlib import asynccontextmanager
-from datetime import datetime
 import signal
-import numpy as np
 import chromadb
 import ollama
-from PIL import ImageDraw, ImageFont
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 from PIL import Image
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form
+from fastapi.responses import JSONResponse, HTMLResponse
+from pydantic import BaseModel
 from ultralytics import YOLO
 from openai import OpenAI
 
 import subprocess
+from nicegui import ui
 from utils.date_validator import DateValidator
+from dependencies import set_collection
+import routes.admin  # noqa: F401 — registers @ui.page('/admin')
 
 # ========== Model & DB Config ==========
-BOTTLE_CLASS_ID = 39
-OLLAMA_MODEL = "ministral-3:3b"
-CONF_THRESHOLD = 0.8
+YOLO_MODEL_PATH = "14_bottles_yolo/bottle_detector/best.pt"
+CONF_THRESHOLD = 0.5
 
-# --- Cosine 門檻值建議 ---
-# 0.0 ~ 0.2: 極度相似 (同一產品)
-# 0.2 ~ 0.35: 相似 (同系列不同角度)
-# > 0.35: 視為未知商品
-COSINE_THRESHOLD = 0.35
+LABEL_NAMES = {
+    0:  "冷山茶王",
+    1:  "茶裏王台式綠茶",
+    2:  "茶裏王日式無糖綠茶",
+    3:  "茶裏王白毫烏龍",
+    4:  "茶裏王半熟金萱",
+    5:  "原萃台灣青茶",
+    6:  "原萃烏龍茶",
+    7:  "原萃鐵觀音",
+    8:  "無加糖LP33機能優酪乳",
+    9:  "御茶園特上檸檬茶",
+    10: "每朝健康双纖綠茶",
+    11: "每朝健康熟藏紅茶",
+    12: "愛之味油切分解茶四季春風味",
+    13: "濃韻無糖烏龍茶",
+}
 
 
 class Base64ImageRequest(BaseModel):
@@ -38,7 +48,6 @@ class Base64ImageRequest(BaseModel):
 
 # ========== Global Objects ==========
 yolo_model = None
-cnn_encoder = None
 chroma_client = None
 collection = None
 
@@ -141,34 +150,21 @@ signal.signal(signal.SIGTERM, _signal_handler)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global yolo_model, cnn_encoder, chroma_client, collection
+    global yolo_model, chroma_client, collection
     print("🚀 正在啟動系統並載入模型...")
 
-    # 1. 載入視覺模型
-    yolo_model = YOLO("yolo11m.pt")
-    cnn_encoder = YOLOEncoder("yolo11m-cls.pt")
-    
-    # 2. 初始化 ChromaDB (持久化儲存於本地資料夾)
+    # 1. 載入自訓練 YOLO 偵測模型
+    yolo_model = YOLO(YOLO_MODEL_PATH)
+    print(f"✅ YOLO 模型載入完成: {YOLO_MODEL_PATH}")
+
+    # 2. 初始化 ChromaDB（供 /db/* CRUD 端點使用）
     chroma_client = chromadb.PersistentClient(path="./drink_vector_db")
-    # collection = chroma_client.get_or_create_collection(name="drink_catalog", metadata={"hnsw:space": "cosine"})
     collection = chroma_client.get_or_create_collection(name="drink_catalog")
-    
-    existing_count = collection.count()
-    print(f"📦 ChromaDB 已就緒，目前資料庫包含 {existing_count} 筆特徵資料。")
+    set_collection(collection)
+    print(f"📦 ChromaDB 已就緒，目前資料庫包含 {collection.count()} 筆資料。")
 
-    # Debug: 檢查 DB 中每筆特徵的維度與幾何長度（L2 norm）
-    if existing_count > 0:
-        db_items = collection.get(include=["embeddings", "metadatas"])
-        print("[DEBUG] DB 特徵向量資訊:")
-        for item_id, meta, emb in zip(db_items['ids'], db_items['metadatas'], db_items['embeddings']):
-            vec = np.array(emb)
-            label = f"{meta.get('brand','')}{meta.get('flavor','')}" or item_id
-            print(f"  {label} | dim={vec.shape[0]} | L2 norm={np.linalg.norm(vec):.6f}")
-
-    # 啟動時執行
     start_llama_server()
     yield
-    # 關閉時執行
     stop_llama_server()
 
 
@@ -189,96 +185,43 @@ class Base64ImageRequest(BaseModel):
 # ========== Helper Functions ==========
 
 DEBUG_DIR = "detected_bottle"
-_FONT_PATH = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
-_debug_font = ImageFont.truetype(_FONT_PATH, size=14)
 
-def detect_and_crop_bottles(pil_image: Image.Image):
+def detect_and_label(pil_image: Image.Image) -> list[str]:
+    """用 best.pt 偵測，直接回傳每個 bbox 對應的商品名稱列表。"""
     results = yolo_model(pil_image, conf=CONF_THRESHOLD, verbose=False)
-    cropped_images = []
-    boxes_found = []
+    detected = []
+    boxes_info = []
 
     for result in results:
         for box in result.boxes:
-            if int(box.cls[0]) == BOTTLE_CLASS_ID:
-                x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
-                conf = float(box.conf[0])
-                cropped_images.append(pil_image.crop((x1, y1, x2, y2)))
-                boxes_found.append((x1, y1, x2, y2, conf))
+            cls_id = int(box.cls[0])
+            conf = float(box.conf[0])
+            name = LABEL_NAMES.get(cls_id, f"未知({cls_id})")
+            detected.append(name)
+            boxes_info.append((int(v) for v in box.xyxy[0].tolist()) )
+            print(f"[YOLO] {name} (cls={cls_id}, conf={conf:.2f})")
 
-    # Debug: 為每張輸入圖建立資料夾，存原圖 bbox 標註 + 各 crop
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    debug_folder = os.path.join(DEBUG_DIR, timestamp)
-    if boxes_found:
-        os.makedirs(debug_folder, exist_ok=True)
+    # Debug: 儲存標註圖
+    # if boxes_info:
+    #     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    #     debug_folder = os.path.join(DEBUG_DIR, timestamp)
+    #     os.makedirs(debug_folder, exist_ok=True)
+    #     pil_image.save(os.path.join(debug_folder, "input.jpg"))
 
-        # 儲存原始輸入圖
-        pil_image.save(os.path.join(debug_folder, "input.jpg"))
+    #     overview = pil_image.copy()
+    #     draw = ImageDraw.Draw(overview)
+    #     for result in results:
+    #         for box in result.boxes:
+    #             cls_id = int(box.cls[0])
+    #             conf = float(box.conf[0])
+    #             x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
+    #             name = LABEL_NAMES.get(cls_id, f"未知({cls_id})")
+    #             draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
+    #             draw.text((x1, max(0, y1 - 15)), f"{name} {conf:.2f}", fill="red", font=_debug_font)
+    #     overview.save(os.path.join(debug_folder, "overview.jpg"))
+    #     print(f"[DEBUG] debug 資料夾: {debug_folder}")
 
-        # 儲存原圖並標上 bbox
-        overview_img = pil_image.copy()
-        draw = ImageDraw.Draw(overview_img)
-        for i, (x1, y1, x2, y2, conf) in enumerate(boxes_found):
-            draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
-            draw.text((x1, max(0, y1 - 15)), f"#{i} {conf:.2f}", fill="red", font=_debug_font)
-        overview_img.save(os.path.join(debug_folder, "overview.jpg"))
-
-        # 儲存所有 cropped bottle 原圖
-        for i, crop in enumerate(cropped_images):
-            crop.save(os.path.join(debug_folder, f"crop_{i:02d}_raw.jpg"))
-
-        print(f"[DEBUG] 偵測到 {len(boxes_found)} 個瓶子，debug 資料夾: {debug_folder}")
-
-    return cropped_images, debug_folder
-
-
-# ========== Feature Extraction ==========
-
-class YOLOEncoder:
-    def __init__(self, model_path: str = "yolo11m-cls.pt"):
-        self.model = YOLO(model_path)
-
-    def encode(self, image_pil) -> list:
-        results = self.model.embed(source=image_pil, verbose=False)
-        # results 是 list of tensors，取第一個並展平
-        return results[0].flatten().tolist()
-
-
-def match_with_chroma(pil_image: Image.Image, debug_folder: str, crop_index: int):
-    """YOLO11m-cls 特徵向量比對，找出 cosine distance 最小的商品。"""
-    img_emb = cnn_encoder.encode(pil_image)
-
-    total = collection.count()
-    all_results = collection.query(
-        query_embeddings=[img_emb],
-        n_results=max(total, 1),
-        include=["metadatas", "distances"]
-    )
-    distances = list(zip(all_results['metadatas'][0], all_results['distances'][0]))
-
-    print(f"[DEBUG] crop #{crop_index} CLIP 距離:")
-    for meta, dist in distances:
-        label = f"{meta.get('brand','')}{meta.get('flavor','')}"
-        print(f"  {label}: {dist:.4f}")
-
-    if debug_folder:
-        crop_debug = pil_image.copy()
-        draw = ImageDraw.Draw(crop_debug)
-        line_height = 14
-        y_offset = 4
-        for meta, dist in distances:
-            name = f"{meta.get('brand','')}{meta.get('flavor','')}"
-            text = f"{name}: {dist:.4f}"
-            bbox = draw.textbbox((4, y_offset), text, font=_debug_font)
-            draw.rectangle(bbox, fill="white")
-            draw.text((4, y_offset), text, fill="red", font=_debug_font)
-            y_offset += line_height
-        crop_debug.save(os.path.join(debug_folder, f"crop_{crop_index:02d}.jpg"))
-
-    best_meta, best_dist = distances[0]
-    # if best_dist > COSINE_THRESHOLD:
-    #     return "未知商品"
-
-    return f"{best_meta.get('brand','')}{best_meta.get('flavor','')}"
+    return detected
 
 # ========== CRUD Endpoints (管理資料庫) ==========
 
@@ -340,16 +283,14 @@ async def inventory_base64(request: Base64ImageRequest):
     except:
         raise HTTPException(status_code=400, detail="圖片解碼失敗")
 
-    # 2. YOLO 偵測與裁切
-    crops, debug_folder = detect_and_crop_bottles(pil_image)
-    if not crops:
+    # 2. YOLO 偵測 + 直接取得商品名稱
+    detected_names = detect_and_label(pil_image)
+    if not detected_names:
         return {"status": 1, "data": "貨架上看起來沒有瓶子。"}
 
-    # 3. CLIP 向量比對
-    detected_names = [match_with_chroma(img, debug_folder, i) for i, img in enumerate(crops)]
     counts = dict(Counter(detected_names))
     
-    # 4. 組合成文字給 Ollama
+    # 4. 組合成文字給 llama.cpp
     scan_list_str = "\n".join([f"- {k}: {v} 瓶" for k, v in counts.items()])
     print(f"=====SYSTEM_PROMPT=====")
     print(f"{scan_list_str}")
@@ -422,4 +363,5 @@ async def glm_ocr_inference_base64(request: Base64ImageRequest):
 if __name__ == "__main__":
     import uvicorn
 
+    ui.run_with(app, title="Good API", favicon="🍵", dark=False)
     uvicorn.run(app, host="0.0.0.0", port=8888)
