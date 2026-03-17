@@ -6,7 +6,6 @@ from collections import Counter
 from contextlib import asynccontextmanager
 from datetime import datetime
 import signal
-import cv2
 import numpy as np
 import chromadb
 import ollama
@@ -16,7 +15,6 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from PIL import Image
 from ultralytics import YOLO
-from sentence_transformers import SentenceTransformer
 from openai import OpenAI
 
 import subprocess
@@ -40,7 +38,7 @@ class Base64ImageRequest(BaseModel):
 
 # ========== Global Objects ==========
 yolo_model = None
-clip_model = None
+cnn_encoder = None
 chroma_client = None
 collection = None
 
@@ -143,12 +141,12 @@ signal.signal(signal.SIGTERM, _signal_handler)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global yolo_model, clip_model, chroma_client, collection
+    global yolo_model, cnn_encoder, chroma_client, collection
     print("🚀 正在啟動系統並載入模型...")
-    
+
     # 1. 載入視覺模型
     yolo_model = YOLO("yolo11m.pt")
-    clip_model = SentenceTransformer('clip-ViT-B-32')
+    cnn_encoder = YOLOEncoder("yolo11m-cls.pt")
     
     # 2. 初始化 ChromaDB (持久化儲存於本地資料夾)
     chroma_client = chromadb.PersistentClient(path="./drink_vector_db")
@@ -158,7 +156,7 @@ async def lifespan(app: FastAPI):
     existing_count = collection.count()
     print(f"📦 ChromaDB 已就緒，目前資料庫包含 {existing_count} 筆特徵資料。")
 
-    # Debug: 檢查 DB 中每筆 CLIP 特徵的維度與幾何長度（L2 norm）
+    # Debug: 檢查 DB 中每筆特徵的維度與幾何長度（L2 norm）
     if existing_count > 0:
         db_items = collection.get(include=["embeddings", "metadatas"])
         print("[DEBUG] DB 特徵向量資訊:")
@@ -235,29 +233,19 @@ def detect_and_crop_bottles(pil_image: Image.Image):
 
 # ========== Feature Extraction ==========
 
-def get_hsv_features(image_pil):
-    image_cv = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
-    hsv = cv2.cvtColor(image_cv, cv2.COLOR_BGR2HSV)
-    # 3D 直方圖: H=8, S=2, V=2 → 32 維
-    hist = cv2.calcHist([hsv], [0, 1, 2], None, [8, 2, 2], [0, 180, 0, 256, 0, 256])
-    hist = cv2.normalize(hist, hist).flatten()
-    return hist.tolist()
+class YOLOEncoder:
+    def __init__(self, model_path: str = "yolo11m-cls.pt"):
+        self.model = YOLO(model_path)
 
-
-def combine_features(clip_emb, hsv_emb, color_weight=1.5):
-    clip_np = np.array(clip_emb)
-    clip_norm = clip_np / np.linalg.norm(clip_np)
-    hsv_np = np.array(hsv_emb)
-    hsv_weighted = (hsv_np / np.linalg.norm(hsv_np)) * color_weight
-    # 512 + 32 = 544 維
-    return np.hstack((clip_norm, hsv_weighted)).tolist()
+    def encode(self, image_pil) -> list:
+        results = self.model.embed(source=image_pil, verbose=False)
+        # results 是 list of tensors，取第一個並展平
+        return results[0].flatten().tolist()
 
 
 def match_with_chroma(pil_image: Image.Image, debug_folder: str, crop_index: int):
-    """CLIP+HSV 544 維向量比對，找出 cosine distance 最小的商品。"""
-    clip_emb = clip_model.encode(pil_image).tolist()
-    hsv_emb = get_hsv_features(pil_image)
-    img_emb = combine_features(clip_emb, hsv_emb)
+    """YOLO11m-cls 特徵向量比對，找出 cosine distance 最小的商品。"""
+    img_emb = cnn_encoder.encode(pil_image)
 
     total = collection.count()
     all_results = collection.query(
@@ -309,9 +297,7 @@ async def add_to_db(
     """
     item_id = f"{brand}{flavor}"  # 以 brand+flavor 作為唯一 ID
     image = Image.open(file.file).convert("RGB")
-    clip_emb = clip_model.encode(image).tolist()
-    hsv_emb = get_hsv_features(image)
-    embedding = combine_features(clip_emb, hsv_emb)
+    embedding = cnn_encoder.encode(image)
 
     collection.upsert(
         ids=[item_id],
