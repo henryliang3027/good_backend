@@ -1,4 +1,5 @@
 pvenv/*
 ministral/*
+detected_bottle/*
 *.pyc
 *.pt

@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 import signal
 import chromadb
 import ollama
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel
@@ -20,8 +20,14 @@ from utils.date_validator import DateValidator
 from dependencies import set_collection
 import routes.admin  # noqa: F401 — registers @ui.page('/admin')
 
+from datetime import datetime
+
+_FONT_PATH = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+debug_font = ImageFont.truetype(_FONT_PATH, size=18)
+
+
 # ========== Model & DB Config ==========
-YOLO_MODEL_PATH = "14_bottles_yolo/bottle_detector/best.pt"
+YOLO_MODEL_PATH = "14_bottles_yolo/bottle_detector/best105.pt"
 CONF_THRESHOLD = 0.5
 
 LABEL_NAMES = {
@@ -202,24 +208,24 @@ def detect_and_label(pil_image: Image.Image) -> list[str]:
             print(f"[YOLO] {name} (cls={cls_id}, conf={conf:.2f})")
 
     # Debug: 儲存標註圖
-    # if boxes_info:
-    #     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    #     debug_folder = os.path.join(DEBUG_DIR, timestamp)
-    #     os.makedirs(debug_folder, exist_ok=True)
-    #     pil_image.save(os.path.join(debug_folder, "input.jpg"))
+    if boxes_info:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        debug_folder = os.path.join(DEBUG_DIR, timestamp)
+        os.makedirs(debug_folder, exist_ok=True)
+        pil_image.save(os.path.join(debug_folder, "input.jpg"))
 
-    #     overview = pil_image.copy()
-    #     draw = ImageDraw.Draw(overview)
-    #     for result in results:
-    #         for box in result.boxes:
-    #             cls_id = int(box.cls[0])
-    #             conf = float(box.conf[0])
-    #             x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
-    #             name = LABEL_NAMES.get(cls_id, f"未知({cls_id})")
-    #             draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
-    #             draw.text((x1, max(0, y1 - 15)), f"{name} {conf:.2f}", fill="red", font=_debug_font)
-    #     overview.save(os.path.join(debug_folder, "overview.jpg"))
-    #     print(f"[DEBUG] debug 資料夾: {debug_folder}")
+        overview = pil_image.copy()
+        draw = ImageDraw.Draw(overview)
+        for result in results:
+            for box in result.boxes:
+                cls_id = int(box.cls[0])
+                conf = float(box.conf[0])
+                x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
+                name = LABEL_NAMES.get(cls_id, f"未知({cls_id})")
+                draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
+                draw.text((x1, max(0, y1 - 15)), f"{name} {conf:.2f}", fill="red", font=debug_font)
+        overview.save(os.path.join(debug_folder, "overview.jpg"))
+        print(f"[DEBUG] debug 資料夾: {debug_folder}")
 
     return detected
 
@@ -240,11 +246,10 @@ async def add_to_db(
     """
     item_id = f"{brand}{flavor}"  # 以 brand+flavor 作為唯一 ID
     image = Image.open(file.file).convert("RGB")
-    embedding = cnn_encoder.encode(image)
 
     collection.upsert(
         ids=[item_id],
-        embeddings=[embedding],
+        embeddings=[0.0],
         metadatas=[{
             "brand": brand,
             "flavor": flavor,
