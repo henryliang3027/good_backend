@@ -28,6 +28,7 @@ debug_font = ImageFont.truetype(_FONT_PATH, size=18)
 
 # ========== Model & DB Config ==========
 YOLO_MODEL_PATH = "14_bottles_yolo/bottle_detector/best105.pt"
+CAP_YOLO_MODEL_PATH = "caps_yolo/cap_detector/best596.pt"
 CONF_THRESHOLD = 0.5
 
 LABEL_NAMES = {
@@ -54,6 +55,7 @@ class Base64ImageRequest(BaseModel):
 
 # ========== Global Objects ==========
 yolo_model = None
+cap_yolo_model = None
 chroma_client = None
 collection = None
 
@@ -156,12 +158,15 @@ signal.signal(signal.SIGTERM, _signal_handler)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global yolo_model, chroma_client, collection
+    global yolo_model, cap_yolo_model, chroma_client, collection
     print("🚀 正在啟動系統並載入模型...")
 
     # 1. 載入自訓練 YOLO 偵測模型
     yolo_model = YOLO(YOLO_MODEL_PATH)
     print(f"✅ YOLO 模型載入完成: {YOLO_MODEL_PATH}")
+
+    cap_yolo_model = YOLO(CAP_YOLO_MODEL_PATH)
+    print(f"✅ Cap YOLO 模型載入完成: {CAP_YOLO_MODEL_PATH}")
 
     # 2. 初始化 ChromaDB（供 /db/* CRUD 端點使用）
     chroma_client = chromadb.PersistentClient(path="./drink_vector_db")
@@ -192,42 +197,58 @@ class Base64ImageRequest(BaseModel):
 
 DEBUG_DIR = "detected_bottle"
 
-def detect_and_label(pil_image: Image.Image) -> list[str]:
-    """用 best.pt 偵測，直接回傳每個 bbox 對應的商品名稱列表。"""
+
+def bbox_iou(a: tuple, b: tuple) -> float:
+    """計算兩個 bbox (x1,y1,x2,y2) 的 IoU。"""
+    ix1, iy1 = max(a[0], b[0]), max(a[1], b[1])
+    ix2, iy2 = min(a[2], b[2]), min(a[3], b[3])
+    inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+    if inter == 0:
+        return 0.0
+    area_a = (a[2] - a[0]) * (a[3] - a[1])
+    area_b = (b[2] - b[0]) * (b[3] - b[1])
+    return inter / (area_a + area_b - inter)
+
+
+def group_overlapping_bboxes(bboxes: list[tuple]) -> list[list[int]]:
+    """將互相有 overlap 的 bbox 以 Union-Find 歸為同一群，回傳各群的 index 列表。"""
+    n = len(bboxes)
+    parent = list(range(n))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if bbox_iou(bboxes[i], bboxes[j]) > 0:
+                parent[find(i)] = find(j)
+
+    groups: dict[int, list[int]] = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+    return list(groups.values())
+
+
+def detect_and_label(pil_image: Image.Image) -> tuple[list[str], list[tuple]]:
+    """用 bottle YOLO 偵測，回傳 (商品名稱列表, [(name, (x1,y1,x2,y2)), ...])。"""
     results = yolo_model(pil_image, conf=CONF_THRESHOLD, verbose=False)
     detected = []
-    boxes_info = []
+    bottle_bboxes = []
 
     for result in results:
         for box in result.boxes:
             cls_id = int(box.cls[0])
             conf = float(box.conf[0])
             name = LABEL_NAMES.get(cls_id, f"未知({cls_id})")
+            x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
             detected.append(name)
-            boxes_info.append((int(v) for v in box.xyxy[0].tolist()) )
-            print(f"[YOLO] {name} (cls={cls_id}, conf={conf:.2f})")
+            bottle_bboxes.append((name, (x1, y1, x2, y2)))
+            print(f"[YOLO bottle] {name} (cls={cls_id}, conf={conf:.2f})")
 
-    # Debug: 儲存標註圖
-    if boxes_info:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        debug_folder = os.path.join(DEBUG_DIR, timestamp)
-        os.makedirs(debug_folder, exist_ok=True)
-        pil_image.save(os.path.join(debug_folder, "input.jpg"))
-
-        overview = pil_image.copy()
-        draw = ImageDraw.Draw(overview)
-        for result in results:
-            for box in result.boxes:
-                cls_id = int(box.cls[0])
-                conf = float(box.conf[0])
-                x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
-                name = LABEL_NAMES.get(cls_id, f"未知({cls_id})")
-                draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
-                draw.text((x1, max(0, y1 - 15)), f"{name} {conf:.2f}", fill="red", font=debug_font)
-        overview.save(os.path.join(debug_folder, "overview.jpg"))
-        print(f"[DEBUG] debug 資料夾: {debug_folder}")
-
-    return detected
+    return detected, bottle_bboxes
 
 # ========== CRUD Endpoints (管理資料庫) ==========
 
@@ -281,27 +302,93 @@ async def root():
 async def inventory_base64(request: Base64ImageRequest):
     start_time = time.time()
     
+    print("image received")
     # 1. 解碼圖片
     try:
+        t0 = time.time()
         image_data = base64.b64decode(request.image_base64)
         pil_image = Image.open(io.BytesIO(image_data)).convert("RGB")
+        print(f"[IMAGE] decode={round(time.time()-t0, 3)}s, size={len(image_data)} bytes, width={pil_image.width}, height={pil_image.height}")
     except:
         raise HTTPException(status_code=400, detail="圖片解碼失敗")
 
-    # 2. YOLO 偵測 + 直接取得商品名稱
-    detected_names = detect_and_label(pil_image)
+    # 2. YOLO bottle 偵測
+    t0 = time.time()
+    detected_names, bottle_bboxes = detect_and_label(pil_image)
+    print(f"[YOLO bottle] detect={round(time.time()-t0, 3)}s, found={len(detected_names)}")
     if not detected_names:
         return {"status": 1, "data": "貨架上看起來沒有瓶子。"}
 
-    counts = dict(Counter(detected_names))
-    
-    # 4. 組合成文字給 llama.cpp
+    # 3. YOLO cap 偵測，取得所有瓶蓋 bbox
+    t0 = time.time()
+    cap_results = cap_yolo_model(pil_image, conf=CONF_THRESHOLD, verbose=False)
+    cap_bboxes = []
+    for result in cap_results:
+        for box in result.boxes:
+            x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
+            cap_bboxes.append((x1, y1, x2, y2))
+            # print(f"[YOLO cap] bbox=({x1},{y1},{x2},{y2})")
+    print(f"[YOLO cap] detect={round(time.time()-t0, 3)}s, found={len(cap_bboxes)}")
+
+    # 3-1. Debug: 儲存標註圖 bottle and cap
+    if bottle_bboxes or cap_bboxes:
+        t0 = time.time()
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        debug_folder = os.path.join(DEBUG_DIR, timestamp)
+        os.makedirs(debug_folder, exist_ok=True)
+        pil_image.save(os.path.join(debug_folder, "input.jpg"))
+
+        overview = pil_image.copy()
+        draw = ImageDraw.Draw(overview)
+        for name, (x1, y1, x2, y2) in bottle_bboxes:
+            draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
+            draw.text((x1, max(0, y1 - 15)), name, fill="red", font=debug_font)
+        for (x1, y1, x2, y2) in cap_bboxes:
+            draw.rectangle([x1, y1, x2, y2], outline="blue", width=2)
+            draw.text((x1, max(0, y1 - 15)), "cap", fill="blue", font=debug_font)
+        overview.save(os.path.join(debug_folder, "overview.jpg"))
+        print(f"[DEBUG] debug 資料夾: {debug_folder}")
+        print(f"image saving time={round(time.time()-t0, 3)}s")
+
+    # 4. 將有 overlap 的 cap bbox 歸為一群，再與 bottle bbox 比對，計算各 bottle 類別瓶數
+    t0 = time.time()
+    if cap_bboxes and bottle_bboxes:
+        cap_groups = group_overlapping_bboxes(cap_bboxes)
+        bottle_counts: Counter = Counter()
+
+        for group_indices in cap_groups:
+            # 計算此 cap group 的 union bbox
+            gx1 = min(cap_bboxes[i][0] for i in group_indices)
+            gy1 = min(cap_bboxes[i][1] for i in group_indices)
+            gx2 = max(cap_bboxes[i][2] for i in group_indices)
+            gy2 = max(cap_bboxes[i][3] for i in group_indices)
+            group_bbox = (gx1, gy1, gx2, gy2)
+
+            # 找 IoU 最大的 bottle
+            best_iou, best_name = 0.0, None
+            for name, bbox in bottle_bboxes:
+                score = bbox_iou(group_bbox, bbox)
+                if score > best_iou:
+                    best_iou, best_name = score, name
+
+            if best_name:
+                bottle_counts[best_name] += len(group_indices)
+                # print(f"[CAP→BOTTLE] group={group_bbox} → {best_name} (iou={best_iou:.2f}, caps={len(group_indices)})")
+
+        counts = dict(bottle_counts)
+    else:
+        # cap 模型無偵測結果時，退回 bottle 直接計數
+        counts = dict(Counter(detected_names))
+    print(f"matching time={round(time.time()-t0, 6)}ms")
+
+    # 5. 組合成文字給 llama.cpp
     scan_list_str = "\n".join([f"- {k}: {v} 瓶" for k, v in counts.items()])
     print(f"=====SYSTEM_PROMPT=====")
     print(f"{scan_list_str}")
     print(f"==========")
 
     # 5. llama.cpp 推理
+    t0 = time.time()
     response = client.chat.completions.create(
         model="ministral_3_3b",
         messages=[
@@ -315,6 +402,8 @@ async def inventory_base64(request: Base64ImageRequest):
         ],
         temperature=0,
     )
+
+    print(f"vlm response time={round(time.time()-t0, 3)}s")
 
     
     print(f"⚡ 耗時: {round(time.time() - start_time, 2)}s")
