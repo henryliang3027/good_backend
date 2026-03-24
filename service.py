@@ -28,7 +28,7 @@ debug_font = ImageFont.truetype(_FONT_PATH, size=18)
 
 # ========== Model & DB Config ==========
 YOLO_MODEL_PATH = "14_bottles_yolo/bottle_detector/best105.pt"
-CAP_YOLO_MODEL_PATH = "caps_yolo/cap_detector/best596.pt"
+CAP_YOLO_MODEL_PATH = "caps_yolo/cap_detector/best347.pt"
 CAP_CONF_THRESHOLD = 0.5
 BOTTLE_CONF_THRESHOLD = 0.65
 
@@ -60,37 +60,36 @@ cap_yolo_model = None
 chroma_client = None
 collection = None
 
+
 SYSTEM_PROMPT_TEMPLATE = """你是一位專業的超商貨架分析員。請根據以下掃描結果清單回答用戶問題。
 
 【掃描結果清單】
 {scan_list}
 
-【回答規則與範例】
-1. 若用戶詢問「統計商品」或類似整體盤點的問題，嚴格遵守以下格式：
-   根據掃描結果清單，以下是各商品的數量統計：
-   [商品名稱] 有 [數量] 瓶
-   (以此類推，每行一個，不使用列點符號或顏色前綴)
+【輸出格式——絕對遵守】
+每筆商品資訊必須嚴格使用下列格式，注意「有」字與空格，禁止使用冒號（: 或 ：）：
+  [商品名稱] 有 [數量] 瓶
 
-2. 若用戶詢問「有幾瓶 [特定商品]」，嚴格遵守以下格式：
-   [特定商品] 有 [數量] 瓶
-   (如果該商品完全不存在，請回：沒有找到您指定的商品)
+正確：茶裏王台式綠茶 有 2 瓶
+禁止：茶裏王台式綠茶: 2 瓶
+禁止：茶裏王台式綠茶：2 瓶
+禁止：茶裏王台式綠茶 2 瓶
 
-3. 輸出禁止包含額外的解釋或結尾客套話。
-4. 忽略顏色前綴（例如「灰色茶裏王」僅回答「茶裏王」），以掃描清單中的商品名稱為主。
+【回答規則】
+1. 「統計商品」——列出清單中所有商品，每行一個，格式如上。不加任何標題或列點符號。
+
+2. 「有幾瓶 [品牌]」——品牌前綴查詢（如：茶裏王、原萃、每朝）：
+   - 從掃描清單中找出所有名稱「以該品牌為開頭」的商品。
+   - 每行一個，格式如上。必須列出所有符合的商品，不可遺漏任何一項。
+   - 若清單中完全沒有符合的商品，僅回答：沒有找到您指定的商品
+
+3. 「有幾瓶 [完整商品名稱]」——完整名稱查詢：
+   - 若清單中有該商品，回答：[商品名稱] 有 [數量] 瓶
+   - 若清單中沒有該商品，回答：沒有找到您指定的商品
+
+4. 禁止輸出任何額外說明、前言或結尾客套話。
 5. 必須使用繁體中文。
-6. 用戶輸入可能來自語音轉文字（STT），若遇到諧音詞，請自動對應到清單中最接近的商品
-
-【範例】
-用戶：統計商品
-回答：
-根據掃描結果清單，以下是各商品的數量統計：
-原萃台灣青茶 有 1 瓶
-茶裏王半熟金萱 有 1 瓶
-茶裏王白毫烏龍 有 1 瓶
-無加糖LP33機能優酪乳 有 2 瓶
-
-用戶：有幾瓶茶裏王白毫烏龍？
-回答：茶裏王白毫烏龍 有 1 瓶
+6. 若遇到語音辨識諧音詞，自動對應到清單中最相似的商品名稱。
 """
 
 client = OpenAI(
@@ -234,7 +233,7 @@ def group_overlapping_bboxes(bboxes: list[tuple]) -> list[list[int]]:
 
 
 def detect_and_label(pil_image: Image.Image) -> tuple[list[str], list[tuple]]:
-    """用 bottle YOLO 偵測，回傳 (商品名稱列表, [(name, (x1,y1,x2,y2)), ...])。"""
+    """用 bottle YOLO 偵測，回傳 (商品名稱列表, [(name, conf, (x1,y1,x2,y2)), ...])。"""
     results = yolo_model(pil_image, conf=BOTTLE_CONF_THRESHOLD, verbose=False)
     detected = []
     bottle_bboxes = []
@@ -246,7 +245,7 @@ def detect_and_label(pil_image: Image.Image) -> tuple[list[str], list[tuple]]:
             name = LABEL_NAMES.get(cls_id, f"未知({cls_id})")
             x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
             detected.append(name)
-            bottle_bboxes.append((name, (x1, y1, x2, y2)))
+            bottle_bboxes.append((name, conf, (x1, y1, x2, y2)))
             print(f"[YOLO bottle] {name} (cls={cls_id}, conf={conf:.2f})")
 
     return detected, bottle_bboxes
@@ -326,48 +325,50 @@ async def inventory_base64(request: Base64ImageRequest):
     cap_bboxes = []
     for result in cap_results:
         for box in result.boxes:
+            cap_conf = float(box.conf[0])
             x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
-            cap_bboxes.append((x1, y1, x2, y2))
+            cap_bboxes.append((cap_conf, (x1, y1, x2, y2)))
             # print(f"[YOLO cap] bbox=({x1},{y1},{x2},{y2})")
     print(f"[YOLO cap] detect={round(time.time()-t0, 3)}s, found={len(cap_bboxes)}")
 
     # 3-1. Debug: 儲存標註圖 bottle and cap
-    if bottle_bboxes or cap_bboxes:
-        t0 = time.time()
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        debug_folder = os.path.join(DEBUG_DIR, timestamp)
-        os.makedirs(debug_folder, exist_ok=True)
-        pil_image.save(os.path.join(debug_folder, "input.jpg"))
+    # if bottle_bboxes or cap_bboxes:
+    #     t0 = time.time()
+    #     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    #     debug_folder = os.path.join(DEBUG_DIR, timestamp)
+    #     os.makedirs(debug_folder, exist_ok=True)
+    #     pil_image.save(os.path.join(debug_folder, "input.jpg"))
 
-        overview = pil_image.copy()
-        draw = ImageDraw.Draw(overview)
-        for name, (x1, y1, x2, y2) in bottle_bboxes:
-            draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
-            draw.text((x1, max(0, y1 - 15)), name, fill="red", font=debug_font)
-        for (x1, y1, x2, y2) in cap_bboxes:
-            draw.rectangle([x1, y1, x2, y2], outline="blue", width=2)
-            draw.text((x1, max(0, y1 - 15)), "cap", fill="blue", font=debug_font)
-        overview.save(os.path.join(debug_folder, "overview.jpg"))
-        print(f"[DEBUG] debug 資料夾: {debug_folder}")
-        print(f"image saving time={round(time.time()-t0, 3)}s")
+    #     overview = pil_image.copy()
+    #     draw = ImageDraw.Draw(overview)
+    #     for name, conf, (x1, y1, x2, y2) in bottle_bboxes:
+    #         draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
+    #         draw.text((x1, max(0, y1 - 15)), f"{name} {conf:.2f}", fill="red", font=debug_font)
+    #     for (cap_conf, (x1, y1, x2, y2)) in cap_bboxes:
+    #         draw.rectangle([x1, y1, x2, y2], outline="blue", width=2)
+    #         draw.text((x1, max(0, y1 - 15)), f"cap {cap_conf:.2f}", fill="blue", font=debug_font)
+    #     overview.save(os.path.join(debug_folder, "overview.jpg"))
+    #     print(f"[DEBUG] debug 資料夾: {debug_folder}")
+    #     print(f"image saving time={round(time.time()-t0, 3)}s")
 
     # 4. 將有 overlap 的 cap bbox 歸為一群，再與 bottle bbox 比對，計算各 bottle 類別瓶數
     t0 = time.time()
     if cap_bboxes and bottle_bboxes:
-        cap_groups = group_overlapping_bboxes(cap_bboxes)
+        cap_bbox_coords = [bbox for _, bbox in cap_bboxes]
+        cap_groups = group_overlapping_bboxes(cap_bbox_coords)
         bottle_counts: Counter = Counter()
 
         for group_indices in cap_groups:
             # 計算此 cap group 的 union bbox
-            gx1 = min(cap_bboxes[i][0] for i in group_indices)
-            gy1 = min(cap_bboxes[i][1] for i in group_indices)
-            gx2 = max(cap_bboxes[i][2] for i in group_indices)
-            gy2 = max(cap_bboxes[i][3] for i in group_indices)
+            gx1 = min(cap_bbox_coords[i][0] for i in group_indices)
+            gy1 = min(cap_bbox_coords[i][1] for i in group_indices)
+            gx2 = max(cap_bbox_coords[i][2] for i in group_indices)
+            gy2 = max(cap_bbox_coords[i][3] for i in group_indices)
             group_bbox = (gx1, gy1, gx2, gy2)
 
             # 找 IoU 最大的 bottle
             best_iou, best_name = 0.0, None
-            for name, bbox in bottle_bboxes:
+            for name, _conf, bbox in bottle_bboxes:
                 score = bbox_iou(group_bbox, bbox)
                 if score > best_iou:
                     best_iou, best_name = score, name
@@ -388,7 +389,16 @@ async def inventory_base64(request: Base64ImageRequest):
     print(f"{scan_list_str}")
     print(f"==========")
 
-    # 5. llama.cpp 推理
+    # 5-1. 若問題為盤點/統計，直接格式化輸出，不經過 ministral
+    if any(kw in request.question for kw in ("盤點商品", "統計商品")):
+        answer = "\n".join([f"{k} 有 {v} 瓶" for k, v in counts.items()])
+        print(f"⚡ 耗時: {round(time.time() - start_time, 2)}s")
+        print(f"=====回答(直接輸出)======")
+        print(answer)
+        print(f"==============")
+        return {"status": 1, "data": answer}
+
+    # 5-2. 其他問題走 ministral 推理
     t0 = time.time()
     response = client.chat.completions.create(
         model="ministral_3_3b",
@@ -406,7 +416,6 @@ async def inventory_base64(request: Base64ImageRequest):
 
     print(f"vlm response time={round(time.time()-t0, 3)}s")
 
-    
     print(f"⚡ 耗時: {round(time.time() - start_time, 2)}s")
     print(f"=====回答======")
     print(f"{response.choices[0].message.content}")

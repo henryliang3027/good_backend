@@ -1,3 +1,4 @@
+import argparse
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -24,7 +25,7 @@ def draw_label(frame, text, x1, y1, color_bgr):
     frame[:] = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
 MODEL_PATH = "14_bottles_yolo/bottle_detector/best105.pt"
-CAP_MODEL_PATH = "caps_yolo/cap_detector/best596.pt"
+CAP_MODEL_PATH = "caps_yolo/cap_detector/best347.pt"
 VIDEO_PATH = "14_bottles_yolo/20260323_103316.mp4"
 BOTTLE_CONF_THRESHOLD = 0.65
 CAP_CONF_THRESHOLD = 0.5
@@ -70,41 +71,46 @@ CLASS_COLORS = [
     ( 20,  20, 220),  # 13 濃韻無糖烏龍茶        - 深紅
 ]
 
+parser = argparse.ArgumentParser()
+parser.add_argument("--show_bottle", type=lambda x: x.lower() != "false", default=True)
+parser.add_argument("--show_cap", type=lambda x: x.lower() != "false", default=True)
+args = parser.parse_args()
+
 model = YOLO(MODEL_PATH)
 cap_yolo_model = YOLO(CAP_MODEL_PATH)
 cap = cv2.VideoCapture(VIDEO_PATH)
+
+
 
 while cap.isOpened():
     ret, frame = cap.read()
     if not ret:
         break
 
-    results = model(frame, conf=BOTTLE_CONF_THRESHOLD, verbose=False)
+    if args.show_bottle:
+        results = model(frame, conf=BOTTLE_CONF_THRESHOLD, verbose=False)
+        for result in results:
+            for box in result.boxes:
+                cls_id = int(box.cls[0])
+                conf = float(box.conf[0])
+                x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
+                label = f"{LABEL_NAMES.get(cls_id, str(cls_id))} {conf:.2f}"
+                color = CLASS_COLORS[cls_id % len(CLASS_COLORS)]
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                draw_label(frame, label, x1, y1, color)
 
-    for result in results:
-        for box in result.boxes:
-            cls_id = int(box.cls[0])
-            conf = float(box.conf[0])
-            x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
-            label = f"{LABEL_NAMES.get(cls_id, str(cls_id))} {conf:.2f}"
-            color = CLASS_COLORS[cls_id % len(CLASS_COLORS)]
+    if args.show_cap:
+        cap_results = cap_yolo_model(frame, conf=CAP_CONF_THRESHOLD, verbose=False)
+        for result in cap_results:
+            for box in result.boxes:
+                conf = float(box.conf[0])
+                x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
+                label = f"Cap {conf:.2f}"
+                cv2.rectangle(frame, (x1, y1), (x2, y2), CAP_CLASS_COLOR, 2)
+                draw_label(frame, label, x1, y1, CAP_CLASS_COLOR)
 
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            draw_label(frame, label, x1, y1, color)
-
-
-    cap_results = cap_yolo_model(frame, conf=CAP_CONF_THRESHOLD, verbose=False)
-    for result in cap_results:
-        for box in result.boxes:
-            conf = float(box.conf[0])
-            x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
-            label = f"Cap {conf:.2f}"
-            cv2.rectangle(frame, (x1, y1), (x2, y2), CAP_CLASS_COLOR, 2)
-            draw_label(frame, label, x1, y1, CAP_CLASS_COLOR)
-
-
-
-    cv2.imshow("14 Bottles YOLO", frame)
+    resized_img = cv2.resize(frame, (1280, 720), interpolation=cv2.INTER_LINEAR)
+    cv2.imshow("14 Bottles YOLO", resized_img)
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break
 
