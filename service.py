@@ -29,7 +29,8 @@ debug_font = ImageFont.truetype(_FONT_PATH, size=18)
 # ========== Model & DB Config ==========
 YOLO_MODEL_PATH = "14_bottles_yolo/bottle_detector/best105.pt"
 CAP_YOLO_MODEL_PATH = "caps_yolo/cap_detector/best596.pt"
-CONF_THRESHOLD = 0.5
+CAP_CONF_THRESHOLD = 0.5
+BOTTLE_CONF_THRESHOLD = 0.65
 
 LABEL_NAMES = {
     0:  "冷山茶王",
@@ -234,7 +235,7 @@ def group_overlapping_bboxes(bboxes: list[tuple]) -> list[list[int]]:
 
 def detect_and_label(pil_image: Image.Image) -> tuple[list[str], list[tuple]]:
     """用 bottle YOLO 偵測，回傳 (商品名稱列表, [(name, (x1,y1,x2,y2)), ...])。"""
-    results = yolo_model(pil_image, conf=CONF_THRESHOLD, verbose=False)
+    results = yolo_model(pil_image, conf=BOTTLE_CONF_THRESHOLD, verbose=False)
     detected = []
     bottle_bboxes = []
 
@@ -321,7 +322,7 @@ async def inventory_base64(request: Base64ImageRequest):
 
     # 3. YOLO cap 偵測，取得所有瓶蓋 bbox
     t0 = time.time()
-    cap_results = cap_yolo_model(pil_image, conf=CONF_THRESHOLD, verbose=False)
+    cap_results = cap_yolo_model(pil_image, conf=CAP_CONF_THRESHOLD, verbose=False)
     cap_bboxes = []
     for result in cap_results:
         for box in result.boxes:
