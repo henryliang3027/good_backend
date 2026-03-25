@@ -205,7 +205,9 @@ class Base64ImageRequest(BaseModel):
 # ========== Helper Functions ==========
 
 DEBUG_DIR = "detected_bottle"
-
+LABEL_CAPS_DIR = "label_caps"
+LABEL_BOTTLES_DIR = "label_bottles"
+LABEL_IMAGES_DIR = "label_images"
 
 def bbox_iou(a: tuple, b: tuple) -> float:
     """計算兩個 bbox (x1,y1,x2,y2) 的 IoU。"""
@@ -305,7 +307,7 @@ async def inventory_base64(request: Base64ImageRequest):
     if bottle_bboxes or cap_bboxes:
         t0 = time.time()
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        pil_image.save(os.path.join(DEBUG_DIR, f"input_{timestamp}.jpg"))
+        pil_image.save(os.path.join(LABEL_IMAGES_DIR, f"input_{timestamp}.jpg"))
 
         overview = pil_image.copy()
         draw = ImageDraw.Draw(overview)
@@ -321,18 +323,14 @@ async def inventory_base64(request: Base64ImageRequest):
 
         iw, ih = pil_image.width, pil_image.height
 
-        # label: bottle+cap (class 0 = cap, class 1..N = bottle cls_id+1)
-        cap_bottle_lines = []
-        for cls_id, _name, _conf, (x1, y1, x2, y2) in bottle_bboxes:
-            cx, cy = (x1 + x2) / 2 / iw, (y1 + y2) / 2 / ih
-            w,  h  = (x2 - x1) / iw,      (y2 - y1) / ih
-            cap_bottle_lines.append(f"{cls_id + 1} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
+        # label: cap (class 0 = cap, class 1..N = bottle cls_id+1)
+        cap_lines = []
         for _conf, (x1, y1, x2, y2) in cap_bboxes:
             cx, cy = (x1 + x2) / 2 / iw, (y1 + y2) / 2 / ih
             w,  h  = (x2 - x1) / iw,      (y2 - y1) / ih
-            cap_bottle_lines.append(f"0 {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
-        with open(os.path.join(DEBUG_DIR, f"input_{timestamp}_cap.txt"), "w") as f:
-            f.write("\n".join(cap_bottle_lines))
+            cap_lines.append(f"0 {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
+        with open(os.path.join(LABEL_CAPS_DIR, f"input_{timestamp}.txt"), "w") as f:
+            f.write("\n".join(cap_lines))
 
         # label: bottle only
         bottle_lines = []
@@ -340,7 +338,7 @@ async def inventory_base64(request: Base64ImageRequest):
             cx, cy = (x1 + x2) / 2 / iw, (y1 + y2) / 2 / ih
             w,  h  = (x2 - x1) / iw,      (y2 - y1) / ih
             bottle_lines.append(f"{cls_id} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
-        with open(os.path.join(DEBUG_DIR, f"input_{timestamp}_bottle.txt"), "w") as f:
+        with open(os.path.join(LABEL_BOTTLES_DIR, f"input_{timestamp}.txt"), "w") as f:
             f.write("\n".join(bottle_lines))
 
         print(f"image saving time={round(time.time()-t0, 3)}s")
