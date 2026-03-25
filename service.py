@@ -28,7 +28,7 @@ debug_font = ImageFont.truetype(_FONT_PATH, size=18)
 
 # ========== Model & DB Config ==========
 YOLO_MODEL_PATH = "14_bottles_yolo/bottle_detector/best105.pt"
-CAP_YOLO_MODEL_PATH = "caps_yolo/cap_detector/best347.pt"
+CAP_YOLO_MODEL_PATH = "caps_yolo/cap_detector/best596.pt"
 CAP_CONF_THRESHOLD = 0.5
 BOTTLE_CONF_THRESHOLD = 0.65
 
@@ -332,24 +332,24 @@ async def inventory_base64(request: Base64ImageRequest):
     print(f"[YOLO cap] detect={round(time.time()-t0, 3)}s, found={len(cap_bboxes)}")
 
     # 3-1. Debug: 儲存標註圖 bottle and cap
-    # if bottle_bboxes or cap_bboxes:
-    #     t0 = time.time()
-    #     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    #     debug_folder = os.path.join(DEBUG_DIR, timestamp)
-    #     os.makedirs(debug_folder, exist_ok=True)
-    #     pil_image.save(os.path.join(debug_folder, "input.jpg"))
+    if bottle_bboxes or cap_bboxes:
+        t0 = time.time()
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        debug_folder = os.path.join(DEBUG_DIR, timestamp)
+        os.makedirs(debug_folder, exist_ok=True)
+        pil_image.save(os.path.join(debug_folder, "input.jpg"))
 
-    #     overview = pil_image.copy()
-    #     draw = ImageDraw.Draw(overview)
-    #     for name, conf, (x1, y1, x2, y2) in bottle_bboxes:
-    #         draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
-    #         draw.text((x1, max(0, y1 - 15)), f"{name} {conf:.2f}", fill="red", font=debug_font)
-    #     for (cap_conf, (x1, y1, x2, y2)) in cap_bboxes:
-    #         draw.rectangle([x1, y1, x2, y2], outline="blue", width=2)
-    #         draw.text((x1, max(0, y1 - 15)), f"cap {cap_conf:.2f}", fill="blue", font=debug_font)
-    #     overview.save(os.path.join(debug_folder, "overview.jpg"))
-    #     print(f"[DEBUG] debug 資料夾: {debug_folder}")
-    #     print(f"image saving time={round(time.time()-t0, 3)}s")
+        overview = pil_image.copy()
+        draw = ImageDraw.Draw(overview)
+        for name, conf, (x1, y1, x2, y2) in bottle_bboxes:
+            draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
+            draw.text((x1, max(0, y1 - 15)), f"{name} {conf:.2f}", fill="red", font=debug_font)
+        for (cap_conf, (x1, y1, x2, y2)) in cap_bboxes:
+            draw.rectangle([x1, y1, x2, y2], outline="blue", width=2)
+            draw.text((x1, max(0, y1 - 15)), f"cap {cap_conf:.2f}", fill="blue", font=debug_font)
+        overview.save(os.path.join(debug_folder, "overview.jpg"))
+        print(f"[DEBUG] debug 資料夾: {debug_folder}")
+        print(f"image saving time={round(time.time()-t0, 3)}s")
 
     # 4. 將有 overlap 的 cap bbox 歸為一群，再與 bottle bbox 比對，計算各 bottle 類別瓶數
     t0 = time.time()
