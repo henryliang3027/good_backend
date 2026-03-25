@@ -5,7 +5,6 @@ import time
 from collections import Counter
 from contextlib import asynccontextmanager
 import signal
-import chromadb
 import ollama
 from PIL import Image, ImageDraw, ImageFont
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
@@ -18,7 +17,6 @@ import subprocess
 from nicegui import ui
 from utils.date_validator import DateValidator
 from dependencies import set_collection
-import routes.admin  # noqa: F401 — registers @ui.page('/admin')
 
 from datetime import datetime
 
@@ -48,6 +46,23 @@ LABEL_NAMES = {
     12: "愛之味油切分解茶四季春風味",
     13: "濃韻無糖烏龍茶",
 }
+
+CLASS_COLORS = [
+    (  0, 204, 255),  #  0 冷山茶王             - 黃
+    ( 57, 219,  83),  #  1 茶裏王台式綠茶        - 綠
+    ( 34, 139,  34),  #  2 茶裏王日式無糖綠茶    - 深綠
+    (180, 180, 180),  #  3 茶裏王白毫烏龍        - 灰
+    (  0, 165, 255),  #  4 茶裏王半熟金萱        - 橙
+    ( 94, 212,  94),  #  5 原萃台灣青茶          - 青綠
+    (139,  69,  19),  #  6 原萃烏龍茶            - 棕
+    (148,   0, 211),  #  7 原萃鐵觀音            - 紫
+    (255, 255,   0),  #  8 無加糖LP33機能優酪乳  - 青
+    (255, 128,   0),  #  9 御茶園特上檸檬茶      - 藍
+    ( 50, 205,  50),  # 10 每朝健康双纖綠茶      - 草綠
+    (  0,   0, 200),  # 11 每朝健康熟藏紅茶      - 紅
+    (255,  20, 147),  # 12 愛之味油切分解茶      - 粉
+    ( 20,  20, 220),  # 13 濃韻無糖烏龍茶        - 深紅
+]
 
 
 class Base64ImageRequest(BaseModel):
@@ -168,12 +183,6 @@ async def lifespan(app: FastAPI):
     cap_yolo_model = YOLO(CAP_YOLO_MODEL_PATH)
     print(f"✅ Cap YOLO 模型載入完成: {CAP_YOLO_MODEL_PATH}")
 
-    # 2. 初始化 ChromaDB（供 /db/* CRUD 端點使用）
-    chroma_client = chromadb.PersistentClient(path="./drink_vector_db")
-    collection = chroma_client.get_or_create_collection(name="drink_catalog")
-    set_collection(collection)
-    print(f"📦 ChromaDB 已就緒，目前資料庫包含 {collection.count()} 筆資料。")
-
     start_llama_server()
     yield
     stop_llama_server()
@@ -233,7 +242,7 @@ def group_overlapping_bboxes(bboxes: list[tuple]) -> list[list[int]]:
 
 
 def detect_and_label(pil_image: Image.Image) -> tuple[list[str], list[tuple]]:
-    """用 bottle YOLO 偵測，回傳 (商品名稱列表, [(name, conf, (x1,y1,x2,y2)), ...])。"""
+    """用 bottle YOLO 偵測，回傳 (商品名稱列表, [(cls_id, name, conf, (x1,y1,x2,y2)), ...])。"""
     results = yolo_model(pil_image, conf=BOTTLE_CONF_THRESHOLD, verbose=False)
     detected = []
     bottle_bboxes = []
@@ -245,49 +254,10 @@ def detect_and_label(pil_image: Image.Image) -> tuple[list[str], list[tuple]]:
             name = LABEL_NAMES.get(cls_id, f"未知({cls_id})")
             x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
             detected.append(name)
-            bottle_bboxes.append((name, conf, (x1, y1, x2, y2)))
+            bottle_bboxes.append((cls_id, name, conf, (x1, y1, x2, y2)))
             print(f"[YOLO bottle] {name} (cls={cls_id}, conf={conf:.2f})")
 
     return detected, bottle_bboxes
-
-# ========== CRUD Endpoints (管理資料庫) ==========
-
-@app.post("/db/add", summary="[CRUD] 新增飲料特徵到資料庫")
-async def add_to_db(
-    brand: str = Form(...),
-    flavor: str = Form(...),
-    color: str = Form(""),
-    file: UploadFile = File(...)
-):
-    """上傳一張 crop 好的瓶子，存入 ChromaDB。
-
-    - brand: 品牌，例如「茶裏王」
-    - flavor: 口味，例如「台式綠茶」
-    - color: 瓶身顏色，例如「黃色」
-    """
-    item_id = f"{brand}{flavor}"  # 以 brand+flavor 作為唯一 ID
-    image = Image.open(file.file).convert("RGB")
-
-    collection.upsert(
-        ids=[item_id],
-        embeddings=[0.0],
-        metadatas=[{
-            "brand": brand,
-            "flavor": flavor,
-            "color": color,
-        }]
-    )
-    return {"status": "success", "message": f"已存入: {brand} {flavor} ({color})"}
-
-@app.get("/db/list", summary="[CRUD] 列出目前所有商品")
-async def list_db():
-    results = collection.get()
-    return {"total": len(results['ids']), "items": results['metadatas']}
-
-@app.delete("/db/{name}", summary="[CRUD] 刪除特定商品")
-async def delete_item(name: str):
-    collection.delete(ids=[name])
-    return {"status": "deleted", "item": name}
 
 
 @app.get("/")
@@ -335,20 +305,44 @@ async def inventory_base64(request: Base64ImageRequest):
     if bottle_bboxes or cap_bboxes:
         t0 = time.time()
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        debug_folder = os.path.join(DEBUG_DIR, timestamp)
-        os.makedirs(debug_folder, exist_ok=True)
-        pil_image.save(os.path.join(debug_folder, "input.jpg"))
+        pil_image.save(os.path.join(DEBUG_DIR, f"input_{timestamp}.jpg"))
 
         overview = pil_image.copy()
         draw = ImageDraw.Draw(overview)
-        for name, conf, (x1, y1, x2, y2) in bottle_bboxes:
-            draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
-            draw.text((x1, max(0, y1 - 15)), f"{name} {conf:.2f}", fill="red", font=debug_font)
+        for cls_id, name, conf, (x1, y1, x2, y2) in bottle_bboxes:
+            bgr = CLASS_COLORS[cls_id % len(CLASS_COLORS)]
+            color = (bgr[2], bgr[1], bgr[0])
+            draw.rectangle([x1, y1, x2, y2], outline=color, width=3)
+            draw.text((x1, max(0, y1 - 30)), f"{name} {conf:.2f}", fill=color, font=debug_font)
         for (cap_conf, (x1, y1, x2, y2)) in cap_bboxes:
             draw.rectangle([x1, y1, x2, y2], outline="blue", width=2)
-            draw.text((x1, max(0, y1 - 15)), f"cap {cap_conf:.2f}", fill="blue", font=debug_font)
-        overview.save(os.path.join(debug_folder, "overview.jpg"))
-        print(f"[DEBUG] debug 資料夾: {debug_folder}")
+            draw.text((x1, max(0, y1 - 30)), f"cap {cap_conf:.2f}", fill="blue", font=debug_font)
+        overview.save(os.path.join(DEBUG_DIR, f"overview_{timestamp}.jpg"))
+
+        iw, ih = pil_image.width, pil_image.height
+
+        # label: bottle+cap (class 0 = cap, class 1..N = bottle cls_id+1)
+        cap_bottle_lines = []
+        for cls_id, _name, _conf, (x1, y1, x2, y2) in bottle_bboxes:
+            cx, cy = (x1 + x2) / 2 / iw, (y1 + y2) / 2 / ih
+            w,  h  = (x2 - x1) / iw,      (y2 - y1) / ih
+            cap_bottle_lines.append(f"{cls_id + 1} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
+        for _conf, (x1, y1, x2, y2) in cap_bboxes:
+            cx, cy = (x1 + x2) / 2 / iw, (y1 + y2) / 2 / ih
+            w,  h  = (x2 - x1) / iw,      (y2 - y1) / ih
+            cap_bottle_lines.append(f"0 {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
+        with open(os.path.join(DEBUG_DIR, f"input_{timestamp}_cap.txt"), "w") as f:
+            f.write("\n".join(cap_bottle_lines))
+
+        # label: bottle only
+        bottle_lines = []
+        for cls_id, _name, _conf, (x1, y1, x2, y2) in bottle_bboxes:
+            cx, cy = (x1 + x2) / 2 / iw, (y1 + y2) / 2 / ih
+            w,  h  = (x2 - x1) / iw,      (y2 - y1) / ih
+            bottle_lines.append(f"{cls_id} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
+        with open(os.path.join(DEBUG_DIR, f"input_{timestamp}_bottle.txt"), "w") as f:
+            f.write("\n".join(bottle_lines))
+
         print(f"image saving time={round(time.time()-t0, 3)}s")
 
     # 4. 將有 overlap 的 cap bbox 歸為一群，再與 bottle bbox 比對，計算各 bottle 類別瓶數
@@ -368,7 +362,7 @@ async def inventory_base64(request: Base64ImageRequest):
 
             # 找 IoU 最大的 bottle
             best_iou, best_name = 0.0, None
-            for name, _conf, bbox in bottle_bboxes:
+            for _cls_id, name, _conf, bbox in bottle_bboxes:
                 score = bbox_iou(group_bbox, bbox)
                 if score > best_iou:
                     best_iou, best_name = score, name
