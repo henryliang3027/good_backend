@@ -26,8 +26,8 @@ debug_font = ImageFont.truetype(_FONT_PATH, size=18)
 
 # ========== Model & DB Config ==========
 YOLO_MODEL_PATH = "14_bottles_yolo/bottle_detector/best105.pt"
-CAP_YOLO_MODEL_PATH = "caps_yolo/cap_detector/best596.pt"
-CAP_CONF_THRESHOLD = 0.5
+CAP_YOLO_MODEL_PATH = "caps_yolo/cap_detector/best654.pt"
+CAP_CONF_THRESHOLD = 0.87
 BOTTLE_CONF_THRESHOLD = 0.65
 
 LABEL_NAMES = {
@@ -304,44 +304,43 @@ async def inventory_base64(request: Base64ImageRequest):
     print(f"[YOLO cap] detect={round(time.time()-t0, 3)}s, found={len(cap_bboxes)}")
 
     # 3-1. Debug: 儲存標註圖 bottle and cap
-    if bottle_bboxes or cap_bboxes:
-        t0 = time.time()
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        pil_image.save(os.path.join(LABEL_IMAGES_DIR, f"input_{timestamp}.jpg"))
+    t0 = time.time()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    pil_image.save(os.path.join(LABEL_IMAGES_DIR, f"input_{timestamp}.jpg"))
 
-        overview = pil_image.copy()
-        draw = ImageDraw.Draw(overview)
-        for cls_id, name, conf, (x1, y1, x2, y2) in bottle_bboxes:
-            bgr = CLASS_COLORS[cls_id % len(CLASS_COLORS)]
-            color = (bgr[2], bgr[1], bgr[0])
-            draw.rectangle([x1, y1, x2, y2], outline=color, width=3)
-            draw.text((x1, max(0, y1 - 30)), f"{name} {conf:.2f}", fill=color, font=debug_font)
-        for (cap_conf, (x1, y1, x2, y2)) in cap_bboxes:
-            draw.rectangle([x1, y1, x2, y2], outline="blue", width=2)
-            draw.text((x1, max(0, y1 - 30)), f"cap {cap_conf:.2f}", fill="blue", font=debug_font)
-        overview.save(os.path.join(DEBUG_DIR, f"overview_{timestamp}.jpg"))
+    overview = pil_image.copy()
+    draw = ImageDraw.Draw(overview)
+    for cls_id, name, conf, (x1, y1, x2, y2) in bottle_bboxes:
+        bgr = CLASS_COLORS[cls_id % len(CLASS_COLORS)]
+        color = (bgr[2], bgr[1], bgr[0])
+        draw.rectangle([x1, y1, x2, y2], outline=color, width=3)
+        draw.text((x1, max(0, y1 - 30)), f"{name} {conf:.2f}", fill=color, font=debug_font)
+    for (cap_conf, (x1, y1, x2, y2)) in cap_bboxes:
+        draw.rectangle([x1, y1, x2, y2], outline="blue", width=2)
+        draw.text((x1, max(0, y1 - 30)), f"cap {cap_conf:.2f}", fill="blue", font=debug_font)
+    overview.save(os.path.join(DEBUG_DIR, f"overview_{timestamp}.jpg"))
 
-        iw, ih = pil_image.width, pil_image.height
+    iw, ih = pil_image.width, pil_image.height
 
-        # label: cap (class 0 = cap, class 1..N = bottle cls_id+1)
-        cap_lines = []
-        for _conf, (x1, y1, x2, y2) in cap_bboxes:
-            cx, cy = (x1 + x2) / 2 / iw, (y1 + y2) / 2 / ih
-            w,  h  = (x2 - x1) / iw,      (y2 - y1) / ih
-            cap_lines.append(f"0 {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
-        with open(os.path.join(LABEL_CAPS_DIR, f"input_{timestamp}.txt"), "w") as f:
-            f.write("\n".join(cap_lines))
+    # label: cap (class 0 = cap, class 1..N = bottle cls_id+1)
+    cap_lines = []
+    for _conf, (x1, y1, x2, y2) in cap_bboxes:
+        cx, cy = (x1 + x2) / 2 / iw, (y1 + y2) / 2 / ih
+        w,  h  = (x2 - x1) / iw,      (y2 - y1) / ih
+        cap_lines.append(f"0 {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
+    with open(os.path.join(LABEL_CAPS_DIR, f"input_{timestamp}.txt"), "w") as f:
+        f.write("\n".join(cap_lines))
 
-        # label: bottle only
-        bottle_lines = []
-        for cls_id, _name, _conf, (x1, y1, x2, y2) in bottle_bboxes:
-            cx, cy = (x1 + x2) / 2 / iw, (y1 + y2) / 2 / ih
-            w,  h  = (x2 - x1) / iw,      (y2 - y1) / ih
-            bottle_lines.append(f"{cls_id} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
-        with open(os.path.join(LABEL_BOTTLES_DIR, f"input_{timestamp}.txt"), "w") as f:
-            f.write("\n".join(bottle_lines))
+    # label: bottle only
+    bottle_lines = []
+    for cls_id, _name, _conf, (x1, y1, x2, y2) in bottle_bboxes:
+        cx, cy = (x1 + x2) / 2 / iw, (y1 + y2) / 2 / ih
+        w,  h  = (x2 - x1) / iw,      (y2 - y1) / ih
+        bottle_lines.append(f"{cls_id} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
+    with open(os.path.join(LABEL_BOTTLES_DIR, f"input_{timestamp}.txt"), "w") as f:
+        f.write("\n".join(bottle_lines))
 
-        print(f"image saving time={round(time.time()-t0, 3)}s")
+    print(f"image saving time={round(time.time()-t0, 3)}s")
 
     # 4. 將有 overlap 的 cap bbox 歸為一群，再與 bottle bbox 比對，計算各 bottle 類別瓶數
     t0 = time.time()
