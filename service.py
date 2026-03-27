@@ -25,10 +25,10 @@ debug_font = ImageFont.truetype(_FONT_PATH, size=18)
 
 
 # ========== Model & DB Config ==========
-YOLO_MODEL_PATH = "14_bottles_yolo/bottle_detector/best105.pt"
+YOLO_MODEL_PATH = "14_bottles_yolo/bottle_detector/best7.pt"
 CAP_YOLO_MODEL_PATH = "caps_yolo/cap_detector/best654.pt"
-CAP_CONF_THRESHOLD = 0.87
-BOTTLE_CONF_THRESHOLD = 0.65
+CAP_CONF_THRESHOLD = 0.90
+BOTTLE_CONF_THRESHOLD = 0.80
 
 LABEL_NAMES = {
     0:  "冷山茶王",
