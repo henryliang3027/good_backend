@@ -27,8 +27,8 @@ def draw_label(frame, text, x1, y1, color_bgr):
 MODEL_PATH = "14_bottles_yolo/bottle_detector/best7.pt"
 CAP_MODEL_PATH = "caps_yolo/cap_detector/best654.pt"
 VIDEO_PATH = "14_bottles_yolo/20260323_103316.mp4"
-BOTTLE_CONF_THRESHOLD = 0.90
-CAP_CONF_THRESHOLD = 0.8
+CAP_CONF_THRESHOLD = 0.90
+BOTTLE_CONF_THRESHOLD = 0.80
 
 LABEL_NAMES = {
     0: "冷山茶王", 
@@ -74,7 +74,7 @@ CLASS_COLORS = [
 parser = argparse.ArgumentParser()
 parser.add_argument("--show_bottle", type=lambda x: x.lower() != "false", default=True)
 parser.add_argument("--show_cap", type=lambda x: x.lower() != "false", default=True)
-parser.add_argument("--image", type=str, nargs="?", const="images_bottle_fp/fp1.jpg", default=None)
+parser.add_argument("--image", type=str, nargs="?", const="label_images/input_20260402_162351_251871.jpg", default=None)
 args = parser.parse_args()
 
 model = YOLO(MODEL_PATH)
