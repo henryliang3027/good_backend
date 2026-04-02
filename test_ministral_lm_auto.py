@@ -100,6 +100,10 @@ SCAN_LISTS = [
     # 18
     [("愛之味油切分解茶四季春風味", 4), ("每朝健康双纖綠茶", 2), ("茶裏王台式綠茶", 6),
      ("御茶園特上檸檬茶", 3), ("原萃烏龍茶", 5), ("冷山茶王", 4)],
+
+    # 19
+    [("茶裏王台式綠茶", 2), ("原萃鐵觀音", 1), ("茶裏王白毫烏龍", 2),
+     ("原萃烏龍茶:", 2), ("茶裏王日式無糖綠茶", 2), ("原萃台灣青茶", 1)],
 ]
 
 # ── 測試案例定義 ──────────────────────────────────────────────────────────────
@@ -107,9 +111,12 @@ SCAN_LISTS = [
 # expected_keywords: list of strings，每個都必須出現在回答中才算通過
 TEST_CASES = [
     # --- 統計所有商品 ---
-    (0,  "統計商品",          ["茶裏王台式綠茶 有 2 瓶", "原萃鐵觀音 有 2 瓶", "原萃烏龍茶 有 1 瓶"]),
-    (2,  "統計商品",          ["茶裏王台式綠茶 有 4 瓶", "茶裏王日式無糖綠茶 有 3 瓶", "茶裏王白毫烏龍 有 1 瓶"]),
-    (13, "統計商品",          ["冷山茶王 有 1 瓶", "每朝健康双纖綠茶 有 1 瓶", "濃韻無糖烏龍茶 有 1 瓶"]),
+    (0,  "統計商品",          ["茶裏王台式綠茶 有 2 瓶", "原萃鐵觀音 有 2 瓶", "原萃烏龍茶 有 1 瓶",
+                               "茶裏王白毫烏龍 有 2 瓶", "原萃台灣青茶 有 1 瓶", "茶裏王日式無糖綠茶 有 2 瓶"]),
+    (2,  "統計商品",          ["茶裏王台式綠茶 有 4 瓶", "茶裏王日式無糖綠茶 有 3 瓶", "茶裏王白毫烏龍 有 1 瓶",
+                               "茶裏王半熟金萱 有 5 瓶", "無加糖LP33機能優酪乳 有 2 瓶", "冷山茶王 有 3 瓶"]),
+    (13, "統計商品",          ["冷山茶王 有 1 瓶", "茶裏王台式綠茶 有 1 瓶", "原萃台灣青茶 有 1 瓶",
+                               "每朝健康双纖綠茶 有 1 瓶", "愛之味油切分解茶四季春風味 有 1 瓶", "濃韻無糖烏龍茶 有 1 瓶"]),
 
     # --- 品牌前綴查詢 (茶裏王) ---
     (0,  "有幾瓶茶裏王",      ["茶裏王台式綠茶 有 2 瓶", "茶裏王白毫烏龍 有 2 瓶", "茶裏王日式無糖綠茶 有 2 瓶"]),
@@ -159,15 +166,18 @@ SYSTEM_PROMPT_RULES = """
 2. 「有幾瓶 [品牌]」——品牌前綴查詢（如：茶裏王、原萃、每朝）：
    - 從掃描清單中找出所有名稱「以該品牌為開頭」的商品。
    - 每行一個，格式如上。必須列出所有符合的商品，不可遺漏任何一項。
+   - 禁止列出名稱不以該品牌為開頭的商品。例如詢問「原萃」時，不可列出「茶裏王」開頭的商品。
    - 若清單中完全沒有符合的商品，僅回答：沒有找到您指定的商品
 
-3. 「有幾瓶 [完整商品名稱]」——完整名稱查詢：
+3. 「有幾瓶 [完整商品名稱]」——完整名稱查詢（問題中包含完整商品名，例如「有幾瓶原萃鐵觀音」）：
+   - 只回答該指定商品，不可列出其他商品。
    - 若清單中有該商品，回答：[商品名稱] 有 [數量] 瓶
    - 若清單中沒有該商品，回答：沒有找到您指定的商品
 
 4. 禁止輸出任何額外說明、前言或結尾客套話。
 5. 必須使用繁體中文。
 6. 若遇到語音辨識諧音詞，自動對應到清單中最相似的商品名稱。
+7. 商品名稱必須與掃描清單完全一致，逐字照抄，禁止增加、刪除或重複任何文字。
 """
 
 
@@ -239,7 +249,15 @@ def run_tests():
         scan_list = SCAN_LISTS[list_idx]
         answer, elapsed = ask(scan_list, question)
 
-        ok = all(kw in answer for kw in expected_keywords)
+        
+
+        answer_lines = [line for line in answer.splitlines() if line]
+
+        print(answer)
+        print(answer_lines)
+        missing = [kw for kw in expected_keywords if kw not in answer]
+        extra   = [line for line in answer_lines if line not in expected_keywords]
+        ok = not missing and not extra
         status = "PASS" if ok else "FAIL"
         if ok:
             passed += 1
@@ -253,9 +271,9 @@ def run_tests():
         print(f"  清單 #{list_idx}: {[f'{n}×{q}' for n, q in scan_list]}")
         print(f"  問題: {question}")
         if not ok:
-            missing = [kw for kw in expected_keywords if kw not in answer]
             print(f"  回答: {answer}")
             print(f"  缺少關鍵字: {missing}")
+            print(f"  多餘內容: {extra}")
 
     # 總結
     print("\n" + "=" * 60)
@@ -266,9 +284,12 @@ def run_tests():
         print("\n失敗案例明細:")
         for no, list_idx, question, answer, elapsed, ok, expected_keywords in results:
             if not ok:
+                answer_lines = [line for line in answer.splitlines() if line]
                 missing = [kw for kw in expected_keywords if kw not in answer]
+                extra   = [line for line in answer_lines if line not in expected_keywords]
                 print(f"  #{no:02d} 清單#{list_idx} | Q: {question}")
                 print(f"       缺少: {missing}")
+                print(f"       多餘: {extra}")
                 print(f"       回答: {answer!r}")
 
     return failed == 0

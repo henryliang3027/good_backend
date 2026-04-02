@@ -76,11 +76,7 @@ chroma_client = None
 collection = None
 
 
-SYSTEM_PROMPT_TEMPLATE = """你是一位專業的超商貨架分析員。請根據以下掃描結果清單回答用戶問題。
-
-【掃描結果清單】
-{scan_list}
-
+SYSTEM_PROMPT_RULES = """
 【輸出格式——絕對遵守】
 每筆商品資訊必須嚴格使用下列格式，注意「有」字與空格，禁止使用冒號（: 或 ：）：
   [商品名稱] 有 [數量] 瓶
@@ -96,16 +92,25 @@ SYSTEM_PROMPT_TEMPLATE = """你是一位專業的超商貨架分析員。請根�
 2. 「有幾瓶 [品牌]」——品牌前綴查詢（如：茶裏王、原萃、每朝）：
    - 從掃描清單中找出所有名稱「以該品牌為開頭」的商品。
    - 每行一個，格式如上。必須列出所有符合的商品，不可遺漏任何一項。
+   - 禁止列出名稱不以該品牌為開頭的商品。例如詢問「原萃」時，不可列出「茶裏王」開頭的商品。
    - 若清單中完全沒有符合的商品，僅回答：沒有找到您指定的商品
 
-3. 「有幾瓶 [完整商品名稱]」——完整名稱查詢：
+3. 「有幾瓶 [完整商品名稱]」——完整名稱查詢（問題中包含完整商品名，例如「有幾瓶原萃鐵觀音」）：
+   - 只回答該指定商品，不可列出其他商品。
    - 若清單中有該商品，回答：[商品名稱] 有 [數量] 瓶
    - 若清單中沒有該商品，回答：沒有找到您指定的商品
 
 4. 禁止輸出任何額外說明、前言或結尾客套話。
 5. 必須使用繁體中文。
 6. 若遇到語音辨識諧音詞，自動對應到清單中最相似的商品名稱。
+7. 商品名稱必須與掃描清單完全一致，逐字照抄，禁止增加、刪除或重複任何文字。
 """
+
+
+def build_system_prompt(scan_list: list[tuple[str, int]]) -> str:
+    items = "\n".join(f"- {name}: {qty} 瓶" for name, qty in scan_list)
+    return f"你是一位專業的超商貨架分析員。請根據以下掃描結果清單回答用戶問題。\n\n【掃描結果清單】\n{items}\n{SYSTEM_PROMPT_RULES}"
+
 
 client = OpenAI(
     base_url="http://127.0.0.1:8881/v1",
@@ -394,7 +399,7 @@ async def inventory_base64(request: Base64ImageRequest):
     response = client.chat.completions.create(
         model="ministral_3_3b",
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT_TEMPLATE.format(scan_list=scan_list_str)},
+            {"role": "system", "content": build_system_prompt(list(counts.items()))},
             {
                 "role": "user",
                 "content": [
