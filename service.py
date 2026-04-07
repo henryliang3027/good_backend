@@ -379,6 +379,8 @@ async def inventory_base64(request: Base64ImageRequest):
         counts = dict(Counter(detected_names))
     print(f"matching time={round(time.time()-t0, 6)}ms")
 
+    counts = dict(sorted(counts.items(), key=lambda x: x[0]))
+
     # 5. 組合成文字給 llama.cpp
     scan_list_str = "\n".join([f"- {k}: {v} 瓶" for k, v in counts.items()])
     print(f"=====SYSTEM_PROMPT=====")
