@@ -104,6 +104,10 @@ SCAN_LISTS = [
     # 19
     [("原萃鐵觀音", 2), ("原萃烏龍茶", 2), ("茶裏王台式綠茶", 2), 
      ("原萃台灣青茶", 2), ("茶裏王白毫烏龍", 2), ("茶裏王日式無糖綠茶", 2), ],
+
+    # 20
+    [("冷山茶王", 2), ("愛之味油切分解茶四季春風味", 2), ("每朝健康双纖綠茶", 2), 
+     ("每朝健康熟藏紅茶", 1), ("濃韻無糖烏龍茶", 1), ("無加糖LP33機能優酪乳", 2),]
 ]
 
 # ── 測試案例定義 ──────────────────────────────────────────────────────────────
@@ -148,11 +152,11 @@ TEST_CASES = [
     # --- 查無商品 ---
     (0,  "有幾瓶冷山茶王",            ["沒有找到您指定的商品"]),
     (0,  "有幾瓶御茶園特上檸檬茶",    ["沒有找到您指定的商品"]),
-    
+    (20, "有幾瓶茶裏王",            ["沒有找到您指定的商品"]),
 
 ]
 
-# ── System prompt builder ─────────────────────────────────────────────────────
+# ── System prompt builder ──
 SYSTEM_PROMPT_RULES = """
 【輸出格式——絕對遵守】
 每筆商品資訊必須嚴格使用下列格式，注意「有」字與空格，禁止使用冒號（: 或 ：）：
@@ -225,6 +229,27 @@ def start_server() -> subprocess.Popen:
     raise RuntimeError("llama-server 啟動逾時")
 
 
+def filter_answer_by_scan_list(answer: str, scan_list: list[tuple[str, int]]) -> str:
+    """將模型回答逐行與 scan_list 比對，移除不在清單中的商品行。
+    若全部移除則回傳「沒有找到您指定的商品」。"""
+    scan_names = {name for name, _ in scan_list}
+    lines = [line for line in answer.splitlines() if line]
+
+    valid_lines = []
+    for line in lines:
+        if "沒有找到您指定的商品" in line:
+            valid_lines.append(line)
+        elif " 有 " in line and line.endswith(" 瓶"):
+            product_name = line.split(" 有 ")[0]
+            if product_name in scan_names:
+                valid_lines.append(line)
+        # 其他格式的行直接丟棄
+
+    if not valid_lines:
+        return "沒有找到您指定的商品"
+    return "\n".join(valid_lines)
+
+
 def ask(scan_list: list[tuple[str, int]], question: str) -> tuple[str, float]:
     system_prompt = build_system_prompt(scan_list)
     t0 = time.time()
@@ -252,8 +277,7 @@ def run_tests():
     for i, (list_idx, question, expected_keywords) in enumerate(TEST_CASES):
         scan_list = SCAN_LISTS[list_idx]
         answer, elapsed = ask(scan_list, question)
-
-        
+        answer = filter_answer_by_scan_list(answer, scan_list)
 
         answer_lines = [line for line in answer.splitlines() if line]
 

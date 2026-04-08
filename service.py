@@ -107,6 +107,26 @@ SYSTEM_PROMPT_RULES = """
 """
 
 
+def filter_answer_by_scan_list(answer: str, scan_list: list[tuple[str, int]]) -> str:
+    """將模型回答逐行與 scan_list 比對，移除不在清單中的商品行。
+    若全部移除則回傳「沒有找到您指定的商品」。"""
+    scan_names = {name for name, _ in scan_list}
+    lines = [line for line in answer.splitlines() if line]
+
+    valid_lines = []
+    for line in lines:
+        if "沒有找到您指定的商品" in line:
+            valid_lines.append(line)
+        elif " 有 " in line and line.endswith(" 瓶"):
+            product_name = line.split(" 有 ")[0]
+            if product_name in scan_names:
+                valid_lines.append(line)
+
+    if not valid_lines:
+        return "沒有找到您指定的商品"
+    return "\n".join(valid_lines)
+
+
 def build_system_prompt(scan_list: list[tuple[str, int]]) -> str:
     items = "\n".join(f"- {name}: {qty} 瓶" for name, qty in scan_list)
     return f"你是一位專業的超商貨架分析員。請根據以下掃描結果清單回答用戶問題。\n\n【掃描結果清單】\n{items}\n{SYSTEM_PROMPT_RULES}"
@@ -414,11 +434,15 @@ async def inventory_base64(request: Base64ImageRequest):
 
     print(f"vlm response time={round(time.time()-t0, 3)}s")
 
+    answer = filter_answer_by_scan_list(
+        response.choices[0].message.content, list(counts.items())
+    )
+
     print(f"⚡ 耗時: {round(time.time() - start_time, 2)}s")
     print(f"=====回答======")
-    print(f"{response.choices[0].message.content}")
+    print(f"{answer}")
     print(f"==============")
-    return {"status": 1, "data": response.choices[0].message.content}
+    return {"status": 1, "data": answer}
 
 
 
