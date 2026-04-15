@@ -16,7 +16,6 @@ from openai import OpenAI
 import subprocess
 from nicegui import ui
 from utils.date_validator import DateValidator
-from dependencies import set_collection
 
 from datetime import datetime
 
@@ -26,8 +25,8 @@ debug_font = ImageFont.truetype(_FONT_PATH, size=18)
 
 # ========== Model & DB Config ==========
 YOLO_MODEL_PATH = "14_bottles_yolo/bottle_detector/best7.pt"
-CAP_YOLO_MODEL_PATH = "caps_yolo/cap_detector/best654.pt"
-CAP_CONF_THRESHOLD = 0.90
+CAP_YOLO_MODEL_PATH = "caps_yolo/cap_detector/best_L_421_20260413.pt"
+CAP_CONF_THRESHOLD = 0.80
 BOTTLE_CONF_THRESHOLD = 0.80
 
 LABEL_NAMES = {
@@ -72,8 +71,6 @@ class Base64ImageRequest(BaseModel):
 # ========== Global Objects ==========
 yolo_model = None
 cap_yolo_model = None
-chroma_client = None
-collection = None
 
 
 SYSTEM_PROMPT_RULES = """
@@ -198,7 +195,7 @@ signal.signal(signal.SIGTERM, _signal_handler)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global yolo_model, cap_yolo_model, chroma_client, collection
+    global yolo_model, cap_yolo_model
     print("🚀 正在啟動系統並載入模型...")
 
     # 1. 載入自訓練 YOLO 偵測模型

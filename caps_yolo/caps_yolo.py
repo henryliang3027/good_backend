@@ -23,9 +23,9 @@ def draw_label(frame, text, x1, y1, color_bgr):
     frame[:] = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
 
-MODEL_PATH = "cap_detector/best596.pt"
-IMAGE_PATH = "cap_detector/t2.jpg"
-CONF_THRESHOLD = 0.5
+MODEL_PATH = "/home/b40351/Documents/Github/good_backend/caps_yolo/cap_detector/best458.pt"
+IMAGE_PATH = "/home/b40351/Documents/Github/good_backend/label_images/input_20260413_171722_013004.jpg"
+CONF_THRESHOLD = 0.90
 
 LABEL_NAMES = {
     0: "cap",

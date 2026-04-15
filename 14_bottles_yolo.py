@@ -1,132 +1,172 @@
-import argparse
-import cv2
-import numpy as np
+import os
+import base64
+import io
+import time
+from collections import Counter
+from contextlib import asynccontextmanager
+from datetime import datetime
+
+
 from PIL import Image, ImageDraw, ImageFont
+
+
 from ultralytics import YOLO
 
+
+
+
 _FONT_PATH = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
-_font = ImageFont.truetype(_FONT_PATH, size=18)
+debug_font = ImageFont.truetype(_FONT_PATH, size=18)
 
 
-def draw_label(frame, text, x1, y1, color_bgr):
-    """用 PIL 渲染中文 label，背景填 color，文字白色，貼回 OpenCV frame。"""
-    # BGR -> RGB
-    color_rgb = color_bgr[::-1]
-    pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-    draw = ImageDraw.Draw(pil_img)
 
-    bbox = draw.textbbox((0, 0), text, font=_font)
-    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    lx, ly = x1, max(0, y1 - th - 6)
 
-    draw.rectangle([lx, ly, lx + tw + 6, ly + th + 6], fill=color_rgb)
-    draw.text((lx + 3, ly + 3), text, font=_font, fill=(0, 0, 0))
-
-    frame[:] = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
-
-MODEL_PATH = "14_bottles_yolo/bottle_detector/best7.pt"
-CAP_MODEL_PATH = "caps_yolo/cap_detector/best654.pt"
-VIDEO_PATH = "14_bottles_yolo/20260323_103316.mp4"
+# ========== Model & DB Config ==========
+YOLO_MODEL_PATH = "14_bottles_yolo/bottle_detector/best7.pt"
+CAP_YOLO_MODEL_PATH = "caps_yolo/cap_detector/best_L_421_20260413.pt"
 CAP_CONF_THRESHOLD = 0.90
 BOTTLE_CONF_THRESHOLD = 0.80
 
+
 LABEL_NAMES = {
-    0: "冷山茶王", 
-    1: "茶裏王台式綠茶", 
-    2: "茶裏王日式無糖綠茶", 
-    3: "茶裏王白毫烏龍", 
-    4: "茶裏王半熟金萱", 
-    5: "原萃台灣青茶", 
-    6: "原萃烏龍茶",
-    7: "原萃鐵觀音", 
-    8: "無加糖LP33機能優酪乳", 
-    9: "御茶園特上檸檬茶", 
-    10: "每朝健康双纖綠茶", 
-    11: "每朝健康熟藏紅茶", 
-    12: "愛之味油切分解茶四季春風味", 
-    13: "濃韻無糖烏龍茶",
+   0: "冷山茶王",
+   1: "茶裏王台式綠茶",
+   2: "茶裏王日式無糖綠茶",
+   3: "茶裏王白毫烏龍",
+   4: "茶裏王半熟金萱",
+   5: "原萃台灣青茶",
+   6: "原萃烏龍茶",
+   7: "原萃鐵觀音",
+   8: "無加糖LP33機能優酪乳",
+   9: "御茶園特上檸檬茶",
+   10: "每朝健康双纖綠茶",
+   11: "每朝健康熟藏紅茶",
+   12: "愛之味油切分解茶四季春風味",
+   13: "濃韻無糖烏龍茶",
 }
 
-CAP_LABEL_NAME = {
-    0: "cap",
-}
 
-CAP_CLASS_COLOR = (255,255,128) # cap
-
-# BGR colors, one per class (0–13)
 CLASS_COLORS = [
-    (  0, 204, 255),  #  0 冷山茶王             - 黃
-    ( 57, 219,  83),  #  1 茶裏王台式綠茶        - 綠
-    ( 34, 139,  34),  #  2 茶裏王日式無糖綠茶    - 深綠
-    (180, 180, 180),  #  3 茶裏王白毫烏龍        - 灰
-    (  0, 165, 255),  #  4 茶裏王半熟金萱        - 橙
-    ( 94, 212,  94),  #  5 原萃台灣青茶          - 青綠
-    (139,  69,  19),  #  6 原萃烏龍茶            - 棕
-    (148,   0, 211),  #  7 原萃鐵觀音            - 紫
-    (255, 255,   0),  #  8 無加糖LP33機能優酪乳  - 青
-    (255, 128,   0),  #  9 御茶園特上檸檬茶      - 藍
-    ( 50, 205,  50),  # 10 每朝健康双纖綠茶      - 草綠
-    (  0,   0, 200),  # 11 每朝健康熟藏紅茶      - 紅
-    (255,  20, 147),  # 12 愛之味油切分解茶      - 粉
-    ( 20,  20, 220),  # 13 濃韻無糖烏龍茶        - 深紅
+   (0, 204, 255),  #  0 冷山茶王
+   (57, 219, 83),  #  1 茶裏王台式綠茶
+   (34, 139, 34),  #  2 茶裏王日式無糖綠茶
+   (180, 180, 180),  #  3 茶裏王白毫烏龍
+   (0, 165, 255),  #  4 茶裏王半熟金萱
+   (94, 212, 94),  #  5 原萃台灣青茶
+   (139, 69, 19),  #  6 原萃烏龍茶
+   (148, 0, 211),  #  7 原萃鐵觀音
+   (255, 255, 0),  #  8 無加糖LP33機能優酪乳
+   (255, 128, 0),  #  9 御茶園特上檸檬茶
+   (50, 205, 50),  # 10 每朝健康双纖綠茶
+   (0, 0, 200),  # 11 每朝健康熟藏紅茶
+   (255, 20, 147),  # 12 愛之味油切分解茶
+   (20, 20, 220),  # 13 濃韻無糖烏龍茶
 ]
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--show_bottle", type=lambda x: x.lower() != "false", default=True)
-parser.add_argument("--show_cap", type=lambda x: x.lower() != "false", default=True)
-parser.add_argument("--image", type=str, nargs="?", const="label_images/input_20260402_162351_251871.jpg", default=None)
-args = parser.parse_args()
-
-model = YOLO(MODEL_PATH)
-cap_yolo_model = YOLO(CAP_MODEL_PATH)
 
 
-def process_frame(frame):
-    if args.show_bottle:
-        results = model(frame, conf=BOTTLE_CONF_THRESHOLD, verbose=False)
-        for result in results:
-            for box in result.boxes:
-                cls_id = int(box.cls[0])
-                conf = float(box.conf[0])
-                x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
-                label = f"{LABEL_NAMES.get(cls_id, str(cls_id))} {conf:.2f}"
-                color = CLASS_COLORS[cls_id % len(CLASS_COLORS)]
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                draw_label(frame, label, x1, y1, color)
 
-    if args.show_cap:
-        cap_results = cap_yolo_model(frame, conf=CAP_CONF_THRESHOLD, verbose=False)
-        for result in cap_results:
-            for box in result.boxes:
-                conf = float(box.conf[0])
-                x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
-                label = f"Cap {conf:.2f}"
-                cv2.rectangle(frame, (x1, y1), (x2, y2), CAP_CLASS_COLOR, 2)
-                draw_label(frame, label, x1, y1, CAP_CLASS_COLOR)
-
-    return frame
+# ========== Global Objects ==========
+yolo_model = None
+cap_yolo_model = None
 
 
-if args.image:
-    frame = cv2.imread(args.image)
-    if frame is None:
-        print(f"無法讀取圖片：{args.image}")
-        exit(1)
-    frame = process_frame(frame)
-    resized_img = cv2.resize(frame, (1280, 720), interpolation=cv2.INTER_LINEAR)
-    cv2.imshow("14 Bottles YOLO", resized_img)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-else:
-    cap = cv2.VideoCapture(VIDEO_PATH)
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-        frame = process_frame(frame)
-        resized_img = cv2.resize(frame, (1280, 720), interpolation=cv2.INTER_LINEAR)
-        cv2.imshow("14 Bottles YOLO", resized_img)
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            break
-    cap.release()
-    cv2.destroyAllWindows()
+def detect_and_label(pil_image: Image.Image) -> tuple[list[str], list[tuple]]:
+   """用 bottle YOLO 偵測，回傳 (商品名稱列表, [(cls_id, name, conf, (x1,y1,x2,y2)), ...])。"""
+   results = yolo_model(pil_image, conf=BOTTLE_CONF_THRESHOLD, verbose=False)
+   detected = []
+   bottle_bboxes = []
+
+
+   for result in results:
+       for box in result.boxes:
+           cls_id = int(box.cls[0])
+           conf = float(box.conf[0])
+           name = LABEL_NAMES.get(cls_id, f"未知({cls_id})")
+           x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
+           detected.append(name)
+           bottle_bboxes.append((cls_id, name, conf, (x1, y1, x2, y2)))
+           print(f"[YOLO bottle] {name} (cls={cls_id}, conf={conf:.2f})")
+
+
+   return detected, bottle_bboxes
+
+
+
+
+def inventory():
+   start_time = time.time()
+
+
+   pil_image = Image.open(
+       "/home/b40351/Documents/Github/good_backend/test_images/input_20260414_113222_030897.jpg"
+   ).convert("RGB")
+
+
+   # 2. YOLO bottle 偵測
+   t0 = time.time()
+   detected_names, bottle_bboxes = detect_and_label(pil_image)
+   print(
+       f"[YOLO bottle] detect={round(time.time()-t0, 3)}s, found={len(detected_names)}"
+   )
+   if not detected_names:
+       return {"status": 1, "data": {}}
+
+
+   # 3. YOLO cap 偵測
+   t0 = time.time()
+   cap_results = cap_yolo_model(pil_image, conf=CAP_CONF_THRESHOLD, verbose=False)
+   cap_bboxes = []
+   for result in cap_results:
+       for box in result.boxes:
+           cap_conf = float(box.conf[0])
+           x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
+           cap_bboxes.append((cap_conf, (x1, y1, x2, y2)))
+   print(f"[YOLO cap] detect={round(time.time()-t0, 3)}s, found={len(cap_bboxes)}")
+
+
+   # 3-1. 儲存標註圖與 label 檔
+   t0 = time.time()
+   timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+   
+
+
+   overview = pil_image.copy()
+   draw = ImageDraw.Draw(overview)
+   for cls_id, name, conf, (x1, y1, x2, y2) in bottle_bboxes:
+       bgr = CLASS_COLORS[cls_id % len(CLASS_COLORS)]
+       color = (bgr[2], bgr[1], bgr[0])
+       draw.rectangle([x1, y1, x2, y2], outline=color, width=3)
+       draw.text(
+           (x1, max(0, y1 - 30)), f"{name} {conf:.2f}", fill=color, font=debug_font
+       )
+   for cap_conf, (x1, y1, x2, y2) in cap_bboxes:
+       draw.rectangle([x1, y1, x2, y2], outline="blue", width=2)
+       draw.text(
+           (x1, max(0, y1 - 30)), f"cap {cap_conf:.2f}", fill="blue", font=debug_font
+       )
+   overview.show()
+
+
+
+   print(f"image saving time={round(time.time()-t0, 3)}s")
+
+
+
+
+if __name__ == "__main__":
+
+
+   # 1. 載入自訓練 YOLO 偵測模型
+   yolo_model = YOLO(YOLO_MODEL_PATH)
+   print(f"✅ YOLO 模型載入完成: {YOLO_MODEL_PATH}")
+
+
+   cap_yolo_model = YOLO(CAP_YOLO_MODEL_PATH)
+   print(f"✅ Cap YOLO 模型載入完成: {CAP_YOLO_MODEL_PATH}")
+
+
+   inventory()
+
+
+
