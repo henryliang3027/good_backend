@@ -1,7 +1,7 @@
 import base64
 import requests
 
-IMAGE_PATH = "label_images/input_20260414_090657_286494.jpg"
+IMAGE_PATH = "/home/b40351/Documents/Github/good_backend/images_bottle_fp/fp1.jpg"
 URL = "http://127.0.0.1:8888/inventory_base64"
 
 with open(IMAGE_PATH, "rb") as f:
