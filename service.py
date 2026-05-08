@@ -6,7 +6,7 @@ from collections import Counter
 from contextlib import asynccontextmanager
 import signal
 import ollama
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel
@@ -26,8 +26,10 @@ debug_font = ImageFont.truetype(_FONT_PATH, size=18)
 # ========== Model & DB Config ==========
 YOLO_MODEL_PATH = "14_bottles_yolo/bottle_detector/best_M_130_20260425.pt"
 CAP_YOLO_MODEL_PATH = "caps_yolo/cap_detector/best_L_101_20260424.pt"
+SHELF_YOLO_MODEL_PATH = "shelf_yolo/best_M_71_20260507.pt"
 CAP_CONF_THRESHOLD = 0.80
 BOTTLE_CONF_THRESHOLD = 0.80
+SHELF_CONF_THRESHOLD = 0.80
 
 LABEL_NAMES = {
     0:  "冷山茶王",
@@ -71,6 +73,7 @@ class Base64ImageRequest(BaseModel):
 # ========== Global Objects ==========
 yolo_model = None
 cap_yolo_model = None
+shelf_yolo_model = None
 
 
 SYSTEM_PROMPT_RULES = """
@@ -195,7 +198,7 @@ signal.signal(signal.SIGTERM, _signal_handler)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global yolo_model, cap_yolo_model
+    global yolo_model, cap_yolo_model, shelf_yolo_model
     print("🚀 正在啟動系統並載入模型...")
 
     # 1. 載入自訓練 YOLO 偵測模型
@@ -204,6 +207,9 @@ async def lifespan(app: FastAPI):
 
     cap_yolo_model = YOLO(CAP_YOLO_MODEL_PATH)
     print(f"✅ Cap YOLO 模型載入完成: {CAP_YOLO_MODEL_PATH}")
+
+    shelf_yolo_model = YOLO(SHELF_YOLO_MODEL_PATH)
+    print(f"✅ Shelf YOLO 模型載入完成: {SHELF_YOLO_MODEL_PATH}")
 
     start_llama_server()
     yield
@@ -222,6 +228,7 @@ app = FastAPI(
 class Base64ImageRequest(BaseModel):
     image_base64: str
     question: str = "請統計圖中的商品"
+    mode: int = 1
 
 
 # ========== Helper Functions ==========
@@ -230,6 +237,7 @@ DEBUG_DIR = "detected_bottle"
 LABEL_CAPS_DIR = "label_caps"
 LABEL_BOTTLES_DIR = "label_bottles"
 LABEL_IMAGES_DIR = "label_images"
+DETECTED_SHELF_DIR = "detected_shelf"
 
 def bbox_iou(a: tuple, b: tuple) -> float:
     """計算兩個 bbox (x1,y1,x2,y2) 的 IoU。"""
@@ -298,13 +306,42 @@ async def inventory_base64(request: Base64ImageRequest):
     
     print("image received")
     # 1. 解碼圖片
+    pil_image = None
     try:
         t0 = time.time()
         image_data = base64.b64decode(request.image_base64)
-        pil_image = Image.open(io.BytesIO(image_data)).convert("RGB")
+        if request.mode == 2:
+            pil_image = ImageOps.exif_transpose(Image.open(io.BytesIO(image_data))).convert("RGB")
+            shelf_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            pil_image.save(os.path.join(DETECTED_SHELF_DIR, f"shelf_{shelf_ts}.jpg"))
+        else:
+            pil_image = Image.open(io.BytesIO(image_data)).convert("RGB")
         print(f"[IMAGE] decode={round(time.time()-t0, 3)}s, size={len(image_data)} bytes, width={pil_image.width}, height={pil_image.height}")
     except:
         raise HTTPException(status_code=400, detail="圖片解碼失敗")
+    
+
+    # 1-1 image vive glass, detect shelf and crop
+    if request.mode == 2:
+        
+        shelf_results = shelf_yolo_model(pil_image, conf=SHELF_CONF_THRESHOLD, verbose=False)
+        shelf_boxes = [
+            (float(box.conf[0]), tuple(int(v) for v in box.xyxy[0].tolist()))
+            for result in shelf_results
+            for box in result.boxes
+        ]
+        if shelf_boxes:
+            shelf_conf, (sx1, sy1, sx2, sy2) = max(shelf_boxes, key=lambda x: x[0])
+            shelf_debug = pil_image.copy()
+            shelf_draw = ImageDraw.Draw(shelf_debug)
+            shelf_draw.rectangle([sx1, sy1, sx2, sy2], outline="red", width=3)
+            shelf_draw.text((sx1, max(0, sy1 - 30)), f"shelf {shelf_conf:.2f}", fill="red", font=debug_font)
+            shelf_debug.save(os.path.join(DETECTED_SHELF_DIR, f"shelf_{shelf_ts}.jpg"))
+            pil_image = pil_image.crop((sx1, sy1, sx2, sy2))
+            print(f"[SHELF] cropped to ({sx1},{sy1},{sx2},{sy2}), new size={pil_image.width}x{pil_image.height}")
+        else:
+            
+            print("[SHELF] no shelf detected, using full image")
 
     # 2. YOLO bottle 偵測
     t0 = time.time()

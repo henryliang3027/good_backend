@@ -1,7 +1,7 @@
 import base64
 import requests
 
-IMAGE_PATH = "/home/b40351/Documents/Github/good_backend/images_bottle_fp/fp1.jpg"
+IMAGE_PATH = "/home/b40351/Documents/Github/good_backend/test_images/gtest.jpeg"
 URL = "http://127.0.0.1:8888/inventory_base64"
 
 with open(IMAGE_PATH, "rb") as f:
@@ -10,6 +10,7 @@ with open(IMAGE_PATH, "rb") as f:
 payload = {
     "image_base64": image_base64,
     "question": "統計商品",
+    "mode": 2,
 }
 
 response = requests.post(URL, json=payload)

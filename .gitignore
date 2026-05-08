@@ -1,5 +1,10 @@
 pvenv/*
 ministral/*
 detected_bottle/*
+detected_shelf/*
+label_bottles/*
+label_caps/*
+label_images/*
 *.pyc
 *.pt
+
