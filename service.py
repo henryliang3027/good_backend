@@ -236,7 +236,9 @@ class Base64ImageRequest(BaseModel):
 DEBUG_DIR = "detected_bottle"
 LABEL_CAPS_DIR = "label_caps"
 LABEL_BOTTLES_DIR = "label_bottles"
+LABEL_SHELF_DIR = "label_shelf"
 LABEL_IMAGES_DIR = "label_images"
+LABEL_IMAGES_SHELF_DIR = "label_image_shelf"
 DETECTED_SHELF_DIR = "detected_shelf"
 
 def bbox_iou(a: tuple, b: tuple) -> float:
@@ -480,6 +482,92 @@ async def inventory_base64(request: Base64ImageRequest):
 
 
 
+TOP_SHELF = {
+    "冷山茶王",
+    "愛之味油切分解茶四季春風味",
+    "濃韻無糖烏龍茶",
+    "無加糖LP33機能優酪乳",
+    "每朝健康双纖綠茶",
+    "每朝健康熟藏紅茶",
+}
+
+BOTTOM_SHELF = {
+    "茶裏王台式綠茶",
+    "茶裏王日式無糖綠茶",
+    "茶裏王白毫烏龍",
+    "原萃台灣青茶",
+    "原萃烏龍茶",
+    "原萃鐵觀音",
+}
+
+
+class CheckOutOfStockRequest(BaseModel):
+    image_base64: str
+
+
+@app.post("/check_out_of_stock")
+async def check_out_of_stock(request: CheckOutOfStockRequest):
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+
+    # 1. 解碼圖片 (mode=2: EXIF transpose + shelf crop)
+    try:
+        image_data = base64.b64decode(request.image_base64)
+        pil_image = ImageOps.exif_transpose(Image.open(io.BytesIO(image_data))).convert("RGB")
+        shelf_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        pil_image.save(os.path.join(LABEL_IMAGES_SHELF_DIR, f"input_shelf_{timestamp}.jpg"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="圖片解碼失敗")
+
+    # 2. 偵測貨架並裁切
+    shelf_results = shelf_yolo_model(pil_image, conf=SHELF_CONF_THRESHOLD, verbose=False)
+    shelf_boxes = [
+        (float(box.conf[0]), tuple(int(v) for v in box.xyxy[0].tolist()))
+        for result in shelf_results
+        for box in result.boxes
+    ]
+    if not shelf_boxes:
+        return {"status": "0", "data": "未偵測到貨架"}
+
+    shelf_conf, (sx1, sy1, sx2, sy2) = max(shelf_boxes, key=lambda x: x[0])
+    shelf_debug = pil_image.copy()
+    shelf_draw = ImageDraw.Draw(shelf_debug)
+    shelf_draw.rectangle([sx1, sy1, sx2, sy2], outline="red", width=3)
+    shelf_draw.text((sx1, max(0, sy1 - 30)), f"shelf {shelf_conf:.2f}", fill="red", font=debug_font)
+    shelf_debug.save(os.path.join(DETECTED_SHELF_DIR, f"shelf_{timestamp}.jpg"))
+
+    # 2-1. Debug: 儲存標註圖 shelf
+    iw_full, ih_full = pil_image.width, pil_image.height
+    scx = (sx1 + sx2) / 2 / iw_full
+    scy = (sy1 + sy2) / 2 / ih_full
+    sw  = (sx2 - sx1) / iw_full
+    sh  = (sy2 - sy1) / ih_full
+    with open(os.path.join(LABEL_SHELF_DIR, f"input_{timestamp}.txt"), "w") as f:
+        f.write(f"0 {scx:.6f} {scy:.6f} {sw:.6f} {sh:.6f}\n")
+
+    pil_image = pil_image.crop((sx1, sy1, sx2, sy2))
+
+    # 3. YOLO bottle 偵測
+    detected_names, bottle_bboxes = detect_and_label(pil_image)
+    counts = dict(Counter(detected_names))
+    print(f"counts={counts}")
+
+    # 6. 判斷缺貨
+    top_out_of_stock = [item for item in TOP_SHELF if item not in counts]
+    bottom_out_of_stock = [item for item in BOTTOM_SHELF if item not in counts]
+
+    print(f"top={top_out_of_stock}")
+    print(f"bottom={bottom_out_of_stock}")
+
+    return {
+        "status": "1",
+        "data": [
+            {"position": "top", "out_of_stock": top_out_of_stock},
+            {"position": "bottom", "out_of_stock": bottom_out_of_stock},
+        ],
+    }
+
+
 def glm_ocr_ollama(base64_image):
     response = ollama.chat(
         model="glm-ocr:q8_0",
@@ -523,5 +611,5 @@ async def glm_ocr_inference_base64(request: Base64ImageRequest):
 if __name__ == "__main__":
     import uvicorn
 
-    ui.run_with(app, title="Good API", favicon="🍵", dark=False)
+    ui.run_with(app, title="Good API",  favicon="🍵", dark=False)
     uvicorn.run(app, host="0.0.0.0", port=8888)
