@@ -5,5 +5,7 @@ detected_shelf/*
 label_bottles/*
 label_caps/*
 label_images/*
+label_image_shelf/*
+label_shelf/*
 *.pyc
 *.pt
