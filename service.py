@@ -27,6 +27,7 @@ debug_font = ImageFont.truetype(_FONT_PATH, size=18)
 YOLO_MODEL_PATH = "14_bottles_yolo/bottle_detector/best_M_130_20260425.pt"
 CAP_YOLO_MODEL_PATH = "caps_yolo/cap_detector/best_L_101_20260424.pt"
 SHELF_YOLO_MODEL_PATH = "shelf_yolo/best_M_71_20260507.pt"
+BOX_YOLO_MODEL_PATH = "box_yolo/best_M_20260513.pt"
 CAP_CONF_THRESHOLD = 0.80
 BOTTLE_CONF_THRESHOLD = 0.80
 SHELF_CONF_THRESHOLD = 0.80
@@ -74,6 +75,7 @@ class Base64ImageRequest(BaseModel):
 yolo_model = None
 cap_yolo_model = None
 shelf_yolo_model = None
+box_yolo_model = None
 
 
 SYSTEM_PROMPT_RULES = """
@@ -198,7 +200,7 @@ signal.signal(signal.SIGTERM, _signal_handler)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global yolo_model, cap_yolo_model, shelf_yolo_model
+    global yolo_model, cap_yolo_model, shelf_yolo_model, box_yolo_model
     print("🚀 正在啟動系統並載入模型...")
 
     # 1. 載入自訓練 YOLO 偵測模型
@@ -210,6 +212,9 @@ async def lifespan(app: FastAPI):
 
     shelf_yolo_model = YOLO(SHELF_YOLO_MODEL_PATH)
     print(f"✅ Shelf YOLO 模型載入完成: {SHELF_YOLO_MODEL_PATH}")
+
+    box_yolo_model = YOLO(BOX_YOLO_MODEL_PATH)
+    print(f"✅ Box YOLO 模型載入完成: {BOX_YOLO_MODEL_PATH}")
 
     start_llama_server()
     yield
@@ -240,6 +245,7 @@ LABEL_SHELF_DIR = "label_shelf"
 LABEL_IMAGES_DIR = "label_images"
 LABEL_IMAGES_SHELF_DIR = "label_image_shelf"
 DETECTED_SHELF_DIR = "detected_shelf"
+DETECTED_BOX_DIR = "detected_box"
 
 def bbox_iou(a: tuple, b: tuple) -> float:
     """計算兩個 bbox (x1,y1,x2,y2) 的 IoU。"""
@@ -568,6 +574,9 @@ async def check_out_of_stock(request: CheckOutOfStockRequest):
     }
 
 
+
+
+
 def glm_ocr_ollama(base64_image):
     response = ollama.chat(
         model="glm-ocr:q8_0",
@@ -606,6 +615,64 @@ async def glm_ocr_inference_base64(request: Base64ImageRequest):
         result = DateValidator.extract_multiple_dates(output)
         print(f"2 result:{result}")
         return JSONResponse(content=result)
+
+
+BOX_SYSTEM_PROMPT = """你是一位商品資訊擷取專家。使用者會提供多筆 OCR 掃描文字，每筆以 [BOX N] 標記。
+請從每筆文字中分別找出「品名」和「有效日期」，並嚴格依照以下 JSON 格式輸出，不可包含任何多餘說明：
+
+[
+  {"name": "品名", "date": "日期"},
+  {"name": "品名", "date": "日期"}
+]
+
+規則：
+1. 品名取商品的完整中文名稱，若辨識不到則填空字串。
+2. 日期統一格式為 YYYY.MM.DD，若只有年月則填 YYYY.MM，若辨識不到則填空字串。
+3. 每個 [BOX N] 對應輸出陣列中的一個元素，順序必須相同。
+4. 禁止輸出 JSON 以外的任何文字。"""
+
+
+class BoxDetectionRequest(BaseModel):
+    image_base64: str
+
+
+@app.post("/box_detection")
+async def box_detection(request: BoxDetectionRequest):
+    try:
+        image_data = base64.b64decode(request.image_base64)
+        pil_image = ImageOps.exif_transpose(Image.open(io.BytesIO(image_data))).convert("RGB")
+    except Exception:
+        raise HTTPException(status_code=400, detail="圖片解碼失敗")
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+
+    results = box_yolo_model(pil_image, verbose=False)
+
+    overview = pil_image.copy()
+    draw = ImageDraw.Draw(overview)
+    ocr_results = []
+
+    for result in results:
+        for box in result.boxes:
+            cls_id = int(box.cls[0])
+            conf = float(box.conf[0])
+            x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
+            label = result.names.get(cls_id, str(cls_id))
+            draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
+            draw.text((x1, max(0, y1 - 30)), f"{label} {conf:.2f}", fill="red", font=debug_font)
+            print(f"[BOX] {label} conf={conf:.2f} bbox=({x1},{y1},{x2},{y2})")
+
+            crop = pil_image.crop((x1, y1, x2, y2))
+            print(f"[BOX CROP] size={crop.width}x{crop.height}")
+
+
+    overview.save(os.path.join(DETECTED_BOX_DIR, f"box_{timestamp}.jpg"))
+
+
+
+    return {"status": "1", "data": len(result.boxes)}
+
+
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 pvenv/*
 ministral/*
+glm_ocr/*
 detected_bottle/*
 detected_shelf/*
 label_bottles/*
@@ -7,5 +8,8 @@ label_caps/*
 label_images/*
 label_image_shelf/*
 label_shelf/*
+detected_box/*
 *.pyc
 *.pt
+*.gguf
+

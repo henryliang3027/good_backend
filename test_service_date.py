@@ -1,7 +1,7 @@
 import base64
 import requests
 
-IMAGE_PATH = "/home/b40351/Documents/Github/good_backend/date_image/20261028.png"
+IMAGE_PATH = "/home/b40351/Documents/Github/good_backend/date_image/r7.png"
 URL = "http://127.0.0.1:8888/glm_ocr_inference_base64"
 
 with open(IMAGE_PATH, "rb") as f:
