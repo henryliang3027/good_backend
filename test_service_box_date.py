@@ -1,12 +1,15 @@
 import base64
 import requests
 
-URL = "http://127.0.0.1:8888/box_detection"
-IMAGE_PATH = "vive_test_images/test1.jpg"
+URL = "http://127.0.0.1:8888/box_date_detection"
+
+IMAGE_PATH_LIST = [
+    "/home/b40351/Documents/Github/good_backend/box_date_image/box0.jpg",
+]
 
 
 def test_image(image_path: str):
-    print(f"[IMAGE] {image_path}")
+    print(f"\n[IMAGE] {image_path}")
 
     with open(image_path, "rb") as f:
         image_base64 = base64.b64encode(f.read()).decode("utf-8")
@@ -24,10 +27,11 @@ def test_image(image_path: str):
         return
 
     results = data["data"]
-    print(f"[BOXES] 偵測到 {len(results)} 個 box")
+    print(f"[BOXES] 偵測到 {len(results)} 個箱子")
     for i, item in enumerate(results):
-        print(f"  [{i+1}] label={item['label']}  conf={item['conf']}  ocr={item['ocr']!r}")
+        print(f"  [{i+1}] name={item['name']}  date={item['date']}")
 
 
 if __name__ == "__main__":
-    test_image(IMAGE_PATH)
+    for path in IMAGE_PATH_LIST:
+        test_image(path)

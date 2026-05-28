@@ -27,10 +27,21 @@ debug_font = ImageFont.truetype(_FONT_PATH, size=18)
 YOLO_MODEL_PATH = "14_bottles_yolo/bottle_detector/best_M_130_20260425.pt"
 CAP_YOLO_MODEL_PATH = "caps_yolo/cap_detector/best_L_101_20260424.pt"
 SHELF_YOLO_MODEL_PATH = "shelf_yolo/best_M_71_20260507.pt"
-BOX_YOLO_MODEL_PATH = "box_yolo/best_M_20260513.pt"
+DATE_YOLO_MODEL_PATH = "date_yolo/best_v11m_1280_20260526.pt"
+BOX_OBB_YOLO_MODEL_PATH = "box_obb_yolo/best_26m_obb_640_20260527_3.pt"
 CAP_CONF_THRESHOLD = 0.80
 BOTTLE_CONF_THRESHOLD = 0.80
 SHELF_CONF_THRESHOLD = 0.80
+DATE_CONF_THRESHOLD = 0.80
+BOX_OBB_CONF_THRESHOLD = 0.80
+
+BOX_OBB_LABEL_NAMES = {
+    0: "來一客牛肉蔬菜風味",
+    1: "來一客韓式泡菜風味",
+    2: "黑松蜜桃C",
+    3: "維他露P",
+    4: "樂事洋芋片青檸享清新口味",
+}
 
 LABEL_NAMES = {
     0:  "冷山茶王",
@@ -75,7 +86,8 @@ class Base64ImageRequest(BaseModel):
 yolo_model = None
 cap_yolo_model = None
 shelf_yolo_model = None
-box_yolo_model = None
+date_yolo_model = None
+box_obb_yolo_model = None
 
 
 SYSTEM_PROMPT_RULES = """
@@ -200,10 +212,9 @@ signal.signal(signal.SIGTERM, _signal_handler)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global yolo_model, cap_yolo_model, shelf_yolo_model, box_yolo_model
+    global yolo_model, cap_yolo_model, shelf_yolo_model, date_yolo_model, box_obb_yolo_model
     print("🚀 正在啟動系統並載入模型...")
 
-    # 1. 載入自訓練 YOLO 偵測模型
     yolo_model = YOLO(YOLO_MODEL_PATH)
     print(f"✅ YOLO 模型載入完成: {YOLO_MODEL_PATH}")
 
@@ -213,8 +224,11 @@ async def lifespan(app: FastAPI):
     shelf_yolo_model = YOLO(SHELF_YOLO_MODEL_PATH)
     print(f"✅ Shelf YOLO 模型載入完成: {SHELF_YOLO_MODEL_PATH}")
 
-    box_yolo_model = YOLO(BOX_YOLO_MODEL_PATH)
-    print(f"✅ Box YOLO 模型載入完成: {BOX_YOLO_MODEL_PATH}")
+    date_yolo_model = YOLO(DATE_YOLO_MODEL_PATH)
+    print(f"✅ Date YOLO 模型載入完成: {DATE_YOLO_MODEL_PATH}")
+
+    box_obb_yolo_model = YOLO(BOX_OBB_YOLO_MODEL_PATH)
+    print(f"✅ Box OBB YOLO 模型載入完成: {BOX_OBB_YOLO_MODEL_PATH}")
 
     start_llama_server()
     yield
@@ -242,10 +256,21 @@ DEBUG_DIR = "detected_bottle"
 LABEL_CAPS_DIR = "label_caps"
 LABEL_BOTTLES_DIR = "label_bottles"
 LABEL_SHELF_DIR = "label_shelf"
-LABEL_IMAGES_DIR = "label_images"
-LABEL_IMAGES_SHELF_DIR = "label_image_shelf"
+ORIGINAL_BOTTLE_AND_CAP_IMAGES_DIR = "original_bottle_and_cap_images"
+ORIGINAL_SHELF_IMAGES_DIR = "original_shelf_images"
+ORIGINAL_BOX_IMAGES_DIR = "original_box_images"
 DETECTED_SHELF_DIR = "detected_shelf"
 DETECTED_BOX_DIR = "detected_box"
+LABEL_OBB_BOXES_DIR = "label_obb_boxes"
+LABEL_BOXES_DATE_DIR = "label_boxes_date"
+
+
+for _dir in [DEBUG_DIR, LABEL_CAPS_DIR, LABEL_BOTTLES_DIR, LABEL_SHELF_DIR,
+             ORIGINAL_BOTTLE_AND_CAP_IMAGES_DIR, ORIGINAL_SHELF_IMAGES_DIR,
+             ORIGINAL_BOX_IMAGES_DIR, DETECTED_SHELF_DIR, DETECTED_BOX_DIR,
+             LABEL_OBB_BOXES_DIR, LABEL_BOXES_DATE_DIR]:
+    os.makedirs(_dir, exist_ok=True)
+
 
 def bbox_iou(a: tuple, b: tuple) -> float:
     """計算兩個 bbox (x1,y1,x2,y2) 的 IoU。"""
@@ -373,7 +398,7 @@ async def inventory_base64(request: Base64ImageRequest):
     # 3-1. Debug: 儲存標註圖 bottle and cap
     t0 = time.time()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    pil_image.save(os.path.join(LABEL_IMAGES_DIR, f"input_{timestamp}.jpg"))
+    pil_image.save(os.path.join(ORIGINAL_BOTTLE_AND_CAP_IMAGES_DIR, f"input_{timestamp}.jpg"))
 
     overview = pil_image.copy()
     draw = ImageDraw.Draw(overview)
@@ -521,7 +546,7 @@ async def check_out_of_stock(request: CheckOutOfStockRequest):
         image_data = base64.b64decode(request.image_base64)
         pil_image = ImageOps.exif_transpose(Image.open(io.BytesIO(image_data))).convert("RGB")
         shelf_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        pil_image.save(os.path.join(LABEL_IMAGES_SHELF_DIR, f"input_shelf_{timestamp}.jpg"))
+        pil_image.save(os.path.join(ORIGINAL_SHELF_IMAGES_DIR, f"input_shelf_{timestamp}.jpg"))
     except Exception:
         raise HTTPException(status_code=400, detail="圖片解碼失敗")
 
@@ -617,60 +642,121 @@ async def glm_ocr_inference_base64(request: Base64ImageRequest):
         return JSONResponse(content=result)
 
 
-BOX_SYSTEM_PROMPT = """你是一位商品資訊擷取專家。使用者會提供多筆 OCR 掃描文字，每筆以 [BOX N] 標記。
-請從每筆文字中分別找出「品名」和「有效日期」，並嚴格依照以下 JSON 格式輸出，不可包含任何多餘說明：
-
-[
-  {"name": "品名", "date": "日期"},
-  {"name": "品名", "date": "日期"}
+BOX_COLORS = [
+    (255,   0,   0),  # red
+    (  0, 200,   0),  # green
+    (  0,   0, 255),  # blue
+    (255, 165,   0),  # orange
+    (128,   0, 128),  # purple
+    (  0, 200, 200),  # cyan
+    (255, 105, 180),  # pink
+    (139,  69,  19),  # brown
 ]
-
-規則：
-1. 品名取商品的完整中文名稱，若辨識不到則填空字串。
-2. 日期統一格式為 YYYY.MM.DD，若只有年月則填 YYYY.MM，若辨識不到則填空字串。
-3. 每個 [BOX N] 對應輸出陣列中的一個元素，順序必須相同。
-4. 禁止輸出 JSON 以外的任何文字。"""
 
 
 class BoxDetectionRequest(BaseModel):
     image_base64: str
 
 
-@app.post("/box_detection")
-async def box_detection(request: BoxDetectionRequest):
+def _parse_date_from_ocr(ocr_text: str) -> dict | None:
+    result = DateValidator.extract_expiry_date(ocr_text)
+    if result["count"] == 0:
+        return None
+    return result["date"]["expiration"]
+
+
+@app.post("/box_date_detection")
+async def box_date_detection(request: BoxDetectionRequest):
     try:
         image_data = base64.b64decode(request.image_base64)
         pil_image = ImageOps.exif_transpose(Image.open(io.BytesIO(image_data))).convert("RGB")
     except Exception:
         raise HTTPException(status_code=400, detail="圖片解碼失敗")
 
+    print(f"[IMAGE] width={pil_image.width}, height={pil_image.height}")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-
-    results = box_yolo_model(pil_image, verbose=False)
-
+    pil_image.save(os.path.join(ORIGINAL_BOX_IMAGES_DIR, f"input_{timestamp}.jpg"))
     overview = pil_image.copy()
     draw = ImageDraw.Draw(overview)
-    ocr_results = []
 
-    for result in results:
-        for box in result.boxes:
-            cls_id = int(box.cls[0])
+    # 1. OBB YOLO 偵測商品箱子
+    box_obb_results = box_obb_yolo_model(pil_image, conf=BOX_OBB_CONF_THRESHOLD, verbose=False)
+    box_detections = []  # list of {"name": str, "bbox": (x1,y1,x2,y2)}
+
+    iw, ih = pil_image.width, pil_image.height
+    obb_label_lines = []
+
+    for result in box_obb_results:
+        if result.obb is None:
+            continue
+        for i in range(len(result.obb)):
+            cls_id = int(result.obb.cls[i])
+            conf = float(result.obb.conf[i])
+            name = BOX_OBB_LABEL_NAMES.get(cls_id, f"未知({cls_id})")
+            x1, y1, x2, y2 = (int(v) for v in result.obb.xyxy[i].tolist())
+            box_detections.append({"name": name, "bbox": (x1, y1, x2, y2)})
+            color = BOX_COLORS[cls_id % len(BOX_COLORS)]
+            pts = [(int(v[0]), int(v[1])) for v in result.obb.xyxyxyxy[i].tolist()]
+            draw.polygon(pts, outline=color, width=4)
+            draw.text((x1, max(0, y1 - 30)), f"{name} {conf:.2f}", fill=color, font=debug_font)
+            print(f"[BOX OBB] {name} conf={conf:.2f} bbox=({x1},{y1},{x2},{y2})")
+
+            corners = result.obb.xyxyxyxy[i].tolist()
+            norm_pts = " ".join(f"{v[0]/iw:.6f} {v[1]/ih:.6f}" for v in corners)
+            obb_label_lines.append(f"{cls_id} {norm_pts}")
+
+    with open(os.path.join(LABEL_OBB_BOXES_DIR, f"input_{timestamp}.txt"), "w") as f:
+        f.write("\n".join(obb_label_lines))
+
+    # 2. Date YOLO 偵測日期區域，逐一 OCR + 解析日期
+    date_results = date_yolo_model(pil_image, conf=DATE_CONF_THRESHOLD, verbose=False)
+    date_detections = []  # list of {"bbox": (x1,y1,x2,y2), "date": dict|None, "ocr": str}
+    date_label_lines = []
+
+    for result in date_results:
+        for i, box in enumerate(result.boxes):
             conf = float(box.conf[0])
             x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
-            label = result.names.get(cls_id, str(cls_id))
-            draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
-            draw.text((x1, max(0, y1 - 30)), f"{label} {conf:.2f}", fill="red", font=debug_font)
-            print(f"[BOX] {label} conf={conf:.2f} bbox=({x1},{y1},{x2},{y2})")
+            draw.rectangle([x1, y1, x2, y2], outline=(0, 220, 0), width=2)
+            draw.text((x1, max(0, y1 - 15)), f"date {conf:.2f}", fill=(0, 220, 0), font=debug_font)
+            print(f"[DATE] conf={conf:.2f} bbox=({x1},{y1},{x2},{y2})")
+
+            cx = ((x1 + x2) / 2) / iw
+            cy = ((y1 + y2) / 2) / ih
+            w  = (x2 - x1) / iw
+            h  = (y2 - y1) / ih
+            date_label_lines.append(f"0 {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
 
             crop = pil_image.crop((x1, y1, x2, y2))
-            print(f"[BOX CROP] size={crop.width}x{crop.height}")
 
+            buf = io.BytesIO()
+            crop.save(buf, format="JPEG", quality=95, subsampling=0)
+            crop_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
 
-    overview.save(os.path.join(DETECTED_BOX_DIR, f"box_{timestamp}.jpg"))
+            ocr_text = glm_ocr_ollama(crop_b64)
+            parsed_date = _parse_date_from_ocr(ocr_text)
+            print(f"[DATE OCR] text={ocr_text!r} → {parsed_date}")
 
+            date_detections.append({"bbox": (x1, y1, x2, y2), "date": parsed_date, "ocr": ocr_text})
 
+    with open(os.path.join(LABEL_BOXES_DATE_DIR, f"input_{timestamp}.txt"), "w") as f:
+        f.write("\n".join(date_label_lines))
 
-    return {"status": "1", "data": len(result.boxes)}
+    # 3. 以 IoU 配對日期區域與箱子
+    output = []
+    for box_det in box_detections:
+        best_iou, best_date = 0.0, None
+        for date_det in date_detections:
+            iou = bbox_iou(box_det["bbox"], date_det["bbox"])
+            if iou > best_iou:
+                best_iou, best_date = iou, date_det["date"]
+
+        output.append({"name": box_det["name"], "date": best_date})
+        print(f"[MATCH] {box_det['name']} → {best_date} (iou={best_iou:.3f})")
+
+    overview.save(os.path.join(DETECTED_BOX_DIR, f"box_{timestamp}.jpg"), quality=95, subsampling=0)
+
+    return {"status": "1", "data": output}
 
 
 

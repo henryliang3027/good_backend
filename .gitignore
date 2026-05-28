@@ -9,7 +9,17 @@ label_images/*
 label_image_shelf/*
 label_shelf/*
 detected_box/*
+cropped_boxes/*
+label_boxes_date/*
+label_obb_boxes/*
+original_box_images/*
+original_shelf_images/*
 *.pyc
 *.pt
 *.gguf
+
+
+
+
+
 

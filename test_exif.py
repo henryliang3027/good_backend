@@ -2,7 +2,7 @@ import base64
 import io
 from PIL import Image
 
-IMAGE_PATH = "/home/b40351/Documents/Github/good_backend/test_images/gtest.jpeg"
+IMAGE_PATH = "/home/b40351/Documents/Github/good_backend/label_image_shelf/input_shelf_20260519_155414_948645.jpg"
 
 with open(IMAGE_PATH, "rb") as f:
     raw_bytes = f.read()
