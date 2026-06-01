@@ -694,7 +694,8 @@ async def box_date_detection(request: BoxDetectionRequest):
             conf = float(result.obb.conf[i])
             name = BOX_OBB_LABEL_NAMES.get(cls_id, f"未知({cls_id})")
             x1, y1, x2, y2 = (int(v) for v in result.obb.xyxy[i].tolist())
-            box_detections.append({"name": name, "bbox": (x1, y1, x2, y2)})
+            obb_pts = [[int(v[0]), int(v[1])] for v in result.obb.xyxyxyxy[i].tolist()]
+            box_detections.append({"name": name, "bbox": [x1, y1, x2, y2], "obb": obb_pts})
             color = BOX_COLORS[cls_id % len(BOX_COLORS)]
             pts = [(int(v[0]), int(v[1])) for v in result.obb.xyxyxyxy[i].tolist()]
             draw.polygon(pts, outline=color, width=4)
@@ -745,13 +746,18 @@ async def box_date_detection(request: BoxDetectionRequest):
     # 3. 以 IoU 配對日期區域與箱子
     output = []
     for box_det in box_detections:
-        best_iou, best_date = 0.0, None
+        best_iou, best_date, best_date_bbox = 0.0, None, None
         for date_det in date_detections:
             iou = bbox_iou(box_det["bbox"], date_det["bbox"])
             if iou > best_iou:
-                best_iou, best_date = iou, date_det["date"]
+                best_iou, best_date, best_date_bbox = iou, date_det["date"], date_det["bbox"]
 
-        output.append({"name": box_det["name"], "date": best_date})
+        output.append({
+            "name": box_det["name"],
+            "obb": box_det["obb"],
+            "date": best_date,
+            "date_bbox": best_date_bbox,
+        })
         print(f"[MATCH] {box_det['name']} → {best_date} (iou={best_iou:.3f})")
 
     overview.save(os.path.join(DETECTED_BOX_DIR, f"box_{timestamp}.jpg"), quality=95, subsampling=0)

@@ -29,7 +29,10 @@ def test_image(image_path: str):
     results = data["data"]
     print(f"[BOXES] 偵測到 {len(results)} 個箱子")
     for i, item in enumerate(results):
-        print(f"  [{i+1}] name={item['name']}  date={item['date']}")
+        print(f"  [{i+1}] name={item['name']}")
+        print(f"        obb={item['obb']}")
+        print(f"        date={item['date']}")
+        print(f"        date_bbox={item['date_bbox']}")
 
 
 if __name__ == "__main__":

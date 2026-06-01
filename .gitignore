@@ -14,9 +14,11 @@ label_boxes_date/*
 label_obb_boxes/*
 original_box_images/*
 original_shelf_images/*
+original_bottle_and_cap_images/*
 *.pyc
 *.pt
 *.gguf
+
 
 
 
