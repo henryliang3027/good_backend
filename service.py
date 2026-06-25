@@ -5,7 +5,6 @@ import time
 from collections import Counter
 from contextlib import asynccontextmanager
 import signal
-import ollama
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.responses import JSONResponse, HTMLResponse
@@ -24,11 +23,11 @@ debug_font = ImageFont.truetype(_FONT_PATH, size=18)
 
 
 # ========== Model & DB Config ==========
-YOLO_MODEL_PATH = "14_bottles_yolo/bottle_detector/best_M_130_20260425.pt"
-CAP_YOLO_MODEL_PATH = "caps_yolo/cap_detector/best_L_101_20260424.pt"
-SHELF_YOLO_MODEL_PATH = "shelf_yolo/best_M_71_20260507.pt"
-DATE_YOLO_MODEL_PATH = "date_yolo/best_v11m_1280_20260526.pt"
-BOX_OBB_YOLO_MODEL_PATH = "box_obb_yolo/best_26m_obb_640_20260527_3.pt"
+YOLO_MODEL_PATH = "yolo_model/bottle_detector/best_M_130_20260425.pt"
+CAP_YOLO_MODEL_PATH = "yolo_model/cap_detector/best_L_101_20260424.pt"
+SHELF_YOLO_MODEL_PATH = "yolo_model/shelf_detector/best_M_71_20260507.pt"
+DATE_YOLO_MODEL_PATH = "yolo_model/date_detector/best_v11m_1280_20260602.pt"
+BOX_OBB_YOLO_MODEL_PATH = "yolo_model/box_obb_detector/best_26m_obb_640_20260624.pt"
 CAP_CONF_THRESHOLD = 0.80
 BOTTLE_CONF_THRESHOLD = 0.80
 SHELF_CONF_THRESHOLD = 0.80
@@ -38,9 +37,15 @@ BOX_OBB_CONF_THRESHOLD = 0.80
 BOX_OBB_LABEL_NAMES = {
     0: "來一客牛肉蔬菜風味",
     1: "來一客韓式泡菜風味",
-    2: "黑松蜜桃C",
-    3: "維他露P",
-    4: "樂事洋芋片青檸享清新口味",
+    2: "來一客鮮蝦魚板風味",
+    3: "黑松蜜桃C",
+    4: "維他露P",
+    5: "樂事洋芋片青檸享清新口味",
+    6: "科學麵",
+    7: "真魷味紅燒口味",
+    8: "玉黍叔甜辣口味",
+    9: "Mos Burger",
+    10: "益生菌蒟蒻果凍"
 }
 
 LABEL_NAMES = {
@@ -148,12 +153,18 @@ def build_system_prompt(scan_list: list[tuple[str, int]]) -> str:
 
 client = OpenAI(
     base_url="http://127.0.0.1:8881/v1",
-    api_key="no-key-needed",  # 本地通常不驗證，填任意字串即可
+    api_key="no-key-needed",
+)
+
+glm_ocr_client = OpenAI(
+    base_url="http://127.0.0.1:8882/v1",
+    api_key="no-key-needed",
 )
 
 
 # llama-server 進程
 llama_process = None
+glm_ocr_process = None
 
 LLAMA_SERVER_CMD = [
     "./llama.cpp/build/bin/llama-server",
@@ -171,39 +182,75 @@ LLAMA_SERVER_CMD = [
     "-1",
 ]
 
+GLM_OCR_SERVER_CMD = [
+    "./llama.cpp/build/bin/llama-server",
+    "-m",
+    "glm_ocr/GLM-OCR-Q8_0.gguf",
+    "--mmproj",
+    "glm_ocr/mmproj-GLM-OCR-Q8_0.gguf",
+    "--host",
+    "0.0.0.0",
+    "--port",
+    "8882",
+    "--ctx-size",
+    "4096",
+    "-ngl",
+    "-1",
+]
+
+
+def _start_server(cmd: list[str], name: str) -> subprocess.Popen:
+    print(f"Starting {name}...")
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    time.sleep(5)
+    print(f"{name} started with PID: {proc.pid}")
+    return proc
+
+
+def _stop_server(proc: subprocess.Popen | None, name: str) -> None:
+    if proc:
+        print(f"Stopping {name} (PID: {proc.pid})...")
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            proc.wait(timeout=10)
+        except (subprocess.TimeoutExpired, ProcessLookupError):
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        print(f"{name} stopped.")
+
 
 def start_llama_server():
     global llama_process
-    print("Starting llama-server...")
-    llama_process = subprocess.Popen(
-        LLAMA_SERVER_CMD,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,  # 建立獨立 process group
-    )
-    # 等待 llama-server 啟動
-    time.sleep(5)
-    print(f"llama-server started with PID: {llama_process.pid}")
+    llama_process = _start_server(LLAMA_SERVER_CMD, "llama-server (ministral)")
 
 
 def stop_llama_server():
     global llama_process
-    if llama_process:
-        print(f"Stopping llama-server (PID: {llama_process.pid})...")
-        try:
-            os.killpg(os.getpgid(llama_process.pid), signal.SIGTERM)
-            llama_process.wait(timeout=10)
-        except (subprocess.TimeoutExpired, ProcessLookupError):
-            try:
-                os.killpg(os.getpgid(llama_process.pid), signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        print("llama-server stopped.")
-        llama_process = None
+    _stop_server(llama_process, "llama-server (ministral)")
+    llama_process = None
+
+
+def start_glm_ocr_server():
+    global glm_ocr_process
+    glm_ocr_process = _start_server(GLM_OCR_SERVER_CMD, "llama-server (glm-ocr)")
+
+
+def stop_glm_ocr_server():
+    global glm_ocr_process
+    _stop_server(glm_ocr_process, "llama-server (glm-ocr)")
+    glm_ocr_process = None
 
 
 def _signal_handler(sig, frame):
     stop_llama_server()
+    stop_glm_ocr_server()
     raise SystemExit(0)
 
 signal.signal(signal.SIGINT, _signal_handler)
@@ -231,8 +278,10 @@ async def lifespan(app: FastAPI):
     print(f"✅ Box OBB YOLO 模型載入完成: {BOX_OBB_YOLO_MODEL_PATH}")
 
     start_llama_server()
+    start_glm_ocr_server()
     yield
     stop_llama_server()
+    stop_glm_ocr_server()
 
 
 app = FastAPI(
@@ -263,12 +312,15 @@ DETECTED_SHELF_DIR = "detected_shelf"
 DETECTED_BOX_DIR = "detected_box"
 LABEL_OBB_BOXES_DIR = "label_obb_boxes"
 LABEL_BOXES_DATE_DIR = "label_boxes_date"
+CROPPED_DATE_IMAGE_DIR = "cropped_date_image"
+CROPPED_BOXES_DIR = "cropped_boxes"
 
 
 for _dir in [DEBUG_DIR, LABEL_CAPS_DIR, LABEL_BOTTLES_DIR, LABEL_SHELF_DIR,
              ORIGINAL_BOTTLE_AND_CAP_IMAGES_DIR, ORIGINAL_SHELF_IMAGES_DIR,
              ORIGINAL_BOX_IMAGES_DIR, DETECTED_SHELF_DIR, DETECTED_BOX_DIR,
-             LABEL_OBB_BOXES_DIR, LABEL_BOXES_DATE_DIR]:
+             LABEL_OBB_BOXES_DIR, LABEL_BOXES_DATE_DIR, CROPPED_DATE_IMAGE_DIR,
+             CROPPED_BOXES_DIR]:
     os.makedirs(_dir, exist_ok=True)
 
 
@@ -602,19 +654,21 @@ async def check_out_of_stock(request: CheckOutOfStockRequest):
 
 
 
-def glm_ocr_ollama(base64_image):
-    response = ollama.chat(
-        model="glm-ocr:q8_0",
+def glm_ocr_llama(base64_image: str) -> str:
+    response = glm_ocr_client.chat.completions.create(
+        model="glm-ocr",
         messages=[
             {
                 "role": "user",
-                "content": "Text Recognition:",
-                "images": [base64_image],
+                "content": [
+                    {"type": "text", "text": "Text Recognition:"},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}},
+                ],
             }
         ],
+        temperature=0,
     )
-
-    return response["message"]["content"]
+    return response.choices[0].message.content
 
 
 @app.post("/glm_ocr_inference_base64")
@@ -622,7 +676,7 @@ async def glm_ocr_inference_base64(request: Base64ImageRequest):
     output = ""
 
     try:
-        output = glm_ocr_ollama(request.image_base64)
+        output = glm_ocr_llama(request.image_base64)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -686,6 +740,8 @@ async def box_date_detection(request: BoxDetectionRequest):
     iw, ih = pil_image.width, pil_image.height
     obb_label_lines = []
 
+    output = []
+
     for result in box_obb_results:
         if result.obb is None:
             continue
@@ -702,55 +758,134 @@ async def box_date_detection(request: BoxDetectionRequest):
             draw.text((x1, max(0, y1 - 30)), f"{name} {conf:.2f}", fill=color, font=debug_font)
             print(f"[BOX OBB] {name} conf={conf:.2f} bbox=({x1},{y1},{x2},{y2})")
 
+            box_crop = pil_image.crop((x1, y1, x2, y2))
+            box_crop.save(os.path.join(CROPPED_BOXES_DIR, f"box_{timestamp}_{i}_1.jpg"), quality=95, subsampling=0)
+
             corners = result.obb.xyxyxyxy[i].tolist()
             norm_pts = " ".join(f"{v[0]/iw:.6f} {v[1]/ih:.6f}" for v in corners)
             obb_label_lines.append(f"{cls_id} {norm_pts}")
 
+
+            buf = io.BytesIO()
+            box_crop.save(buf, format="JPEG", quality=95, subsampling=0)
+            box_crop_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+            ocr_text = glm_ocr_llama(box_crop_b64)
+            parsed_date = _parse_date_from_ocr(ocr_text)
+            print(f"[BOX OCR] {name} text={ocr_text!r} → {parsed_date}")
+
+            output.append({
+                "name": name,
+                "obb": obb_pts,
+                "date": parsed_date,
+                "date_bbox": None,
+            })
+
     with open(os.path.join(LABEL_OBB_BOXES_DIR, f"input_{timestamp}.txt"), "w") as f:
         f.write("\n".join(obb_label_lines))
 
-    # 2. Date YOLO 偵測日期區域，逐一 OCR + 解析日期
-    date_results = date_yolo_model(pil_image, conf=DATE_CONF_THRESHOLD, verbose=False)
-    date_detections = []  # list of {"bbox": (x1,y1,x2,y2), "date": dict|None, "ocr": str}
+
+    overview.save(os.path.join(DETECTED_BOX_DIR, f"box_{timestamp}.jpg"), quality=95, subsampling=0)
+
+    return {"status": "1", "data": output}
+
+
+
+
+@app.post("/box_date_detection2")
+async def box_date_detection2(request: BoxDetectionRequest):
+    try:
+        image_data = base64.b64decode(request.image_base64)
+        pil_image = ImageOps.exif_transpose(Image.open(io.BytesIO(image_data))).convert("RGB")
+    except Exception:
+        raise HTTPException(status_code=400, detail="圖片解碼失敗")
+
+    print(f"[IMAGE] width={pil_image.width}, height={pil_image.height}")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    pil_image.save(os.path.join(ORIGINAL_BOX_IMAGES_DIR, f"input2_{timestamp}.jpg"))
+    overview = pil_image.copy()
+    draw = ImageDraw.Draw(overview)
+
+    # 1. OBB YOLO 偵測商品箱子
+    iw, ih = pil_image.width, pil_image.height
+    box_obb_results = box_obb_yolo_model(pil_image, conf=BOX_OBB_CONF_THRESHOLD, verbose=False)
+    box_detections = []
+    obb_label_lines = []
+
+    for result in box_obb_results:
+        if result.obb is None:
+            continue
+        for i in range(len(result.obb)):
+            cls_id = int(result.obb.cls[i])
+            conf = float(result.obb.conf[i])
+            name = BOX_OBB_LABEL_NAMES.get(cls_id, f"未知({cls_id})")
+            x1, y1, x2, y2 = (int(v) for v in result.obb.xyxy[i].tolist())
+            obb_pts = [[int(v[0]), int(v[1])] for v in result.obb.xyxyxyxy[i].tolist()]
+            box_detections.append({"name": name, "bbox": [x1, y1, x2, y2], "obb": obb_pts, "cls_id": cls_id, "conf": conf})
+            color = BOX_COLORS[cls_id % len(BOX_COLORS)]
+            pts = [(int(v[0]), int(v[1])) for v in result.obb.xyxyxyxy[i].tolist()]
+            draw.polygon(pts, outline=color, width=4)
+            draw.text((x1, max(0, y1 - 30)), f"{name} {conf:.2f}", fill=color, font=debug_font)
+            print(f"[BOX OBB] {name} conf={conf:.2f} bbox=({x1},{y1},{x2},{y2})")
+
+            corners = result.obb.xyxyxyxy[i].tolist()
+            norm_pts = " ".join(f"{v[0]/iw:.6f} {v[1]/ih:.6f}" for v in corners)
+            obb_label_lines.append(f"{cls_id} {norm_pts}")
+
+    with open(os.path.join(LABEL_OBB_BOXES_DIR, f"input2_{timestamp}.txt"), "w") as f:
+        f.write("\n".join(obb_label_lines))
+
+    # 2. 對每個偵測到的箱子裁切，再個別跑 date YOLO + OCR
     date_label_lines = []
-
-    for result in date_results:
-        for i, box in enumerate(result.boxes):
-            conf = float(box.conf[0])
-            x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
-            draw.rectangle([x1, y1, x2, y2], outline=(0, 220, 0), width=2)
-            draw.text((x1, max(0, y1 - 15)), f"date {conf:.2f}", fill=(0, 220, 0), font=debug_font)
-            print(f"[DATE] conf={conf:.2f} bbox=({x1},{y1},{x2},{y2})")
-
-            cx = ((x1 + x2) / 2) / iw
-            cy = ((y1 + y2) / 2) / ih
-            w  = (x2 - x1) / iw
-            h  = (y2 - y1) / ih
-            date_label_lines.append(f"0 {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
-
-            crop = pil_image.crop((x1, y1, x2, y2))
-
-            buf = io.BytesIO()
-            crop.save(buf, format="JPEG", quality=95, subsampling=0)
-            crop_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-
-            ocr_text = glm_ocr_ollama(crop_b64)
-            parsed_date = _parse_date_from_ocr(ocr_text)
-            print(f"[DATE OCR] text={ocr_text!r} → {parsed_date}")
-
-            date_detections.append({"bbox": (x1, y1, x2, y2), "date": parsed_date, "ocr": ocr_text})
-
-    with open(os.path.join(LABEL_BOXES_DATE_DIR, f"input_{timestamp}.txt"), "w") as f:
-        f.write("\n".join(date_label_lines))
-
-    # 3. 以 IoU 配對日期區域與箱子
     output = []
+    date_number = 0
     for box_det in box_detections:
-        best_iou, best_date, best_date_bbox = 0.0, None, None
-        for date_det in date_detections:
-            iou = bbox_iou(box_det["bbox"], date_det["bbox"])
-            if iou > best_iou:
-                best_iou, best_date, best_date_bbox = iou, date_det["date"], date_det["bbox"]
+        bx1, by1, bx2, by2 = box_det["bbox"]
+        box_crop = pil_image.crop((bx1, by1, bx2, by2))
+        bcw, bch = box_crop.width, box_crop.height
+
+        date_results = date_yolo_model(box_crop, conf=DATE_CONF_THRESHOLD, verbose=False)
+
+        best_date, best_date_bbox = None, None
+        
+
+        for result in date_results:
+            for date_idx, box in enumerate(result.boxes):
+                conf = float(box.conf[0])
+                dx1, dy1, dx2, dy2 = (int(v) for v in box.xyxy[0].tolist())
+
+                # 座標轉回原圖空間
+                abs_x1 = bx1 + dx1
+                abs_y1 = by1 + dy1
+                abs_x2 = bx1 + dx2
+                abs_y2 = by1 + dy2
+
+                draw.rectangle([abs_x1, abs_y1, abs_x2, abs_y2], outline=(0, 220, 0), width=2)
+                draw.text((abs_x1, max(0, abs_y1 - 15)), f"date {conf:.2f}", fill=(0, 220, 0), font=debug_font)
+                print(f"[DATE in {box_det['name']}] conf={conf:.2f} bbox=({dx1},{dy1},{dx2},{dy2})")
+
+                cx = ((dx1 + dx2) / 2) / bcw
+                cy = ((dy1 + dy2) / 2) / bch
+                w  = (dx2 - dx1) / bcw
+                h  = (dy2 - dy1) / bch
+                date_label_lines.append(f"0 {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
+
+                date_crop = box_crop.crop((dx1, dy1, dx2, dy2))
+                print(f"date:{date_idx}")
+                date_crop.save(os.path.join(CROPPED_DATE_IMAGE_DIR, f"date_{timestamp}_{date_number}_2.jpg"), quality=95, subsampling=0)
+                date_number+=1
+                buf = io.BytesIO()
+                date_crop.save(buf, format="JPEG", quality=95, subsampling=0)
+                crop_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+                ocr_text = glm_ocr_llama(crop_b64)
+                # ocr_text = "20260101"
+                parsed_date = _parse_date_from_ocr(ocr_text)
+                print(f"[DATE OCR] text={ocr_text!r} → {parsed_date}")
+
+                if best_date is None and parsed_date is not None:
+                    best_date = parsed_date
+                    best_date_bbox = [abs_x1, abs_y1, abs_x2, abs_y2]
 
         output.append({
             "name": box_det["name"],
@@ -758,13 +893,14 @@ async def box_date_detection(request: BoxDetectionRequest):
             "date": best_date,
             "date_bbox": best_date_bbox,
         })
-        print(f"[MATCH] {box_det['name']} → {best_date} (iou={best_iou:.3f})")
+        print(f"[MATCH] {box_det['name']} → {best_date}")
 
-    overview.save(os.path.join(DETECTED_BOX_DIR, f"box_{timestamp}.jpg"), quality=95, subsampling=0)
+    with open(os.path.join(LABEL_BOXES_DATE_DIR, f"input2_{timestamp}.txt"), "w") as f:
+        f.write("\n".join(date_label_lines))
+
+    # overview.save(os.path.join(DETECTED_BOX_DIR, f"box2_{timestamp}.jpg"), quality=95, subsampling=0)
 
     return {"status": "1", "data": output}
-
-
 
 
 if __name__ == "__main__":

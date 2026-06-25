@@ -4,7 +4,7 @@ import requests
 URL = "http://127.0.0.1:8888/box_date_detection"
 
 IMAGE_PATH_LIST = [
-    "/home/b40351/Documents/Github/good_backend/box_date_image/box0.jpg",
+    "/home/b40351/Documents/Github/good_backend/original_box_images/input_20260624_140945_466630.jpg",
 ]
 
 

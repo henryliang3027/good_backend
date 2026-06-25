@@ -10,6 +10,7 @@ label_image_shelf/*
 label_shelf/*
 detected_box/*
 cropped_boxes/*
+cropped_date_image/*
 label_boxes_date/*
 label_obb_boxes/*
 original_box_images/*
