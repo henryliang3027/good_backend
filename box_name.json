@@ -1,0 +1,54 @@
+{
+  "products": [
+    {
+      "brand": "樂事",
+      "name": "洋芋片 青檸口味",
+      "keywords": ["樂事", "洋芋片", "青檸"]
+    },
+    {
+      "brand": "華元",
+      "name": "玉黍叔 甜辣口味",
+      "keywords": ["玉黍叔"]
+    },
+    {
+      "brand": "華元",
+      "name": "真魷味 紅燒口味",
+      "keywords": ["真魷味"]
+    },
+    {
+      "brand": "益生菌",
+      "name": "小Q蒟蒻果凍 葡萄",
+      "keywords": ["小Q", "蒟蒻", "益生菌"]
+    },
+    {
+      "brand": "來一客",
+      "name": "韓式泡菜風味",
+      "keywords": ["韓式泡菜"]
+    },
+    {
+      "brand": "來一客",
+      "name": "牛肉蔬菜風味",
+      "keywords": ["牛肉蔬菜"]
+    },
+    {
+      "brand": "來一客",
+      "name": "鮮蝦魚板風味",
+      "keywords": ["鮮蝦魚板", "Seafood"]
+    },
+    {
+      "brand": "MOS BURGER",
+      "name": "調理包系列",
+      "keywords": ["MOS BURGER", "蕃茄燉雞肉", "蕃茄燉牛肉", "日式咖哩"]
+    },
+    {
+      "brand": "維他露",
+      "name": "維他露P",
+      "keywords": ["維他露", "維他露P"]
+    },
+    {
+      "brand": "科學麵",
+      "name": "科學麵 原味 五合一",
+      "keywords": ["科學麵", "科學超", "科学超"]
+    }
+  ]
+}

@@ -1,28 +1,34 @@
-pvenv/*
-ministral/*
-glm_ocr/*
-detected_bottle/*
-detected_shelf/*
-label_bottles/*
-label_caps/*
-label_images/*
-label_image_shelf/*
-label_shelf/*
-detected_box/*
-cropped_boxes/*
-cropped_date_image/*
-label_boxes_date/*
-label_obb_boxes/*
-original_box_images/*
-original_shelf_images/*
-original_bottle_and_cap_images/*
+# Models — copy to target machine via rsync, never commit
+models/*
+!models/**/.gitkeep
+
+# Python
+pvenv/
+__pycache__/
 *.pyc
-*.pt
-*.gguf
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
 
+# Env
+.env
 
+# Debug output directories (written at runtime inside container)
+detected_bottle/
+label_caps/
+label_bottles/
+label_shelf/
+original_bottle_and_cap_images/
+original_shelf_images/
+detected_shelf/
 
-
-
-
-
+# IDE
+.vscode/
+.idea/
+detected_box_name/*
+evaluate/Date-Real/*
+llama-b1287/*
+detected_seg_box/*

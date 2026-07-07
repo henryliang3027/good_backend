@@ -1,118 +1,174 @@
+"""
+GLM-OCR inference test via local llama.cpp server (OpenAI-compatible API).
+
+Usage:
+    pip install fastapi uvicorn openai python-multipart pillow httpx
+    python test_glm_ocr.py
+
+    # Test via Swagger: http://localhost:8001/docs
+"""
+
 import base64
 import io
 import os
-import signal
 import subprocess
 import time
+from contextlib import asynccontextmanager
 
+import httpx
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from openai import OpenAI
 from PIL import Image
+from pydantic import BaseModel
 
-IMAGE_DIR = "/home/b40351/Documents/Github/good_backend/cropped_boxes"
+# ── Paths (relative to repo root) ────────────────────────────────────────────
+_REPO_ROOT   = os.path.abspath(os.path.dirname(__file__))
+LLAMA_SERVER = os.getenv("LLAMA_SERVER",  os.path.join(_REPO_ROOT, "llama-b1287", "llama-server"))
+MODEL_PATH   = os.getenv("MODEL_PATH",    os.path.join(_REPO_ROOT, "models", "glm-ocr", "GLM-OCR-Q8_0.gguf"))
+MMPROJ_PATH  = os.getenv("MMPROJ_PATH",   os.path.join(_REPO_ROOT, "models", "glm-ocr", "mmproj-GLM-OCR-Q8_0.gguf"))
+LIB_PATH     = os.getenv("LD_LIBRARY_PATH", os.path.join(_REPO_ROOT, "llama-b1287"))
 
-GLM_OCR_SERVER_CMD = [
-    "./llama.cpp/build/bin/llama-server",
-    "-m",
-    "glm_ocr/GLM-OCR-Q8_0.gguf",
-    "--mmproj",
-    "glm_ocr/mmproj-GLM-OCR-Q8_0.gguf",
-    "--host",
-    "0.0.0.0",
-    "--port",
-    "8882",
-    "--ctx-size",
-    "4096",
-    "-ngl",
-    "-1",
-]
+LLAMA_PORT     = int(os.getenv("LLAMA_PORT", "8000"))
+LLAMA_CPP_URL  = os.getenv("LLAMA_CPP_URL", f"http://localhost:{LLAMA_PORT}/v1")
+OCR_PROMPT     = os.getenv("OCR_PROMPT", "Text Recognition:")
+N_GPU_LAYERS   = os.getenv("N_GPU_LAYERS", "-1")
+CTX_SIZE       = os.getenv("CTX_SIZE", "4096")
 
-glm_ocr_client = OpenAI(
-    base_url="http://127.0.0.1:8882/v1",
-    api_key="no-key-needed",
+_server_proc: subprocess.Popen | None = None
+
+
+def _start_llama_server() -> subprocess.Popen:
+    cmd = [
+        LLAMA_SERVER,
+        "-m",        MODEL_PATH,
+        "--mmproj",  MMPROJ_PATH,
+        "--host",    "0.0.0.0",
+        "--port",    str(LLAMA_PORT),
+        "--ctx-size", CTX_SIZE,
+        "-ngl",      N_GPU_LAYERS,
+    ]
+    env = os.environ.copy()
+    env["LD_LIBRARY_PATH"] = LIB_PATH + ":" + env.get("LD_LIBRARY_PATH", "")
+    print(f"[llama-server] starting: {' '.join(cmd)}")
+    return subprocess.Popen(cmd, env=env)
+
+
+def _wait_for_server(timeout: int = 120) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            r = httpx.get(f"http://localhost:{LLAMA_PORT}/health", timeout=2)
+            if r.status_code == 200:
+                print("[llama-server] ready")
+                return
+        except Exception:
+            pass
+        time.sleep(2)
+    raise RuntimeError(f"llama-server did not become ready within {timeout}s")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _server_proc
+    _server_proc = _start_llama_server()
+    try:
+        _wait_for_server()
+    except RuntimeError as e:
+        _server_proc.terminate()
+        raise e
+    yield
+    print("[llama-server] shutting down")
+    _server_proc.terminate()
+    _server_proc.wait()
+
+
+app = FastAPI(
+    title="GLM-OCR Test",
+    description="GLM-OCR inference via local llama.cpp server",
+    lifespan=lifespan,
 )
 
-
-def start_glm_ocr_server() -> subprocess.Popen:
-    print("Starting llama-server (glm-ocr)...")
-    proc = subprocess.Popen(
-        GLM_OCR_SERVER_CMD,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
-    time.sleep(5)
-    print(f"llama-server (glm-ocr) started with PID: {proc.pid}")
-    return proc
+_client = OpenAI(base_url=LLAMA_CPP_URL, api_key="no-key-needed")
 
 
-def stop_glm_ocr_server(proc: subprocess.Popen | None) -> None:
-    if proc:
-        print(f"Stopping llama-server (glm-ocr) (PID: {proc.pid})...")
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            proc.wait(timeout=10)
-        except (subprocess.TimeoutExpired, ProcessLookupError):
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        print("llama-server (glm-ocr) stopped.")
+def _image_to_base64(image: Image.Image, fmt: str = "JPEG") -> str:
+    buf = io.BytesIO()
+    image.save(buf, format=fmt)
+    return base64.b64encode(buf.getvalue()).decode()
 
 
-def glm_ocr_llama(base64_image: str) -> str:
-    response = glm_ocr_client.chat.completions.create(
+def _call_glm_ocr(b64_image: str, prompt: str, mime: str = "image/jpeg") -> str:
+    resp = _client.chat.completions.create(
         model="glm-ocr",
         messages=[
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "Text Recognition:"},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}},
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64_image}"}},
                 ],
             }
         ],
         temperature=0,
+        max_tokens=2048,
     )
-    return response.choices[0].message.content
+    return resp.choices[0].message.content
 
 
-def test_image(image_path: str):
-    print(f"\n[IMAGE] {image_path}")
-    with Image.open(image_path) as img:
-        print(f"[SIZE]  {img.width}x{img.height}")
-        if img.width == 314:
-            img = img.resize((img.width * 2, img.height * 2))
-            print(f"[RESIZE] {img.width}x{img.height}")
-        buf = io.BytesIO()
-        img.convert("RGB").save(buf, format="JPEG", quality=95)
-        image_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+# ── Request / Response models ─────────────────────────────────────────────────
 
-    start = time.perf_counter()
-    result = glm_ocr_llama(image_base64)
-    elapsed = time.perf_counter() - start
+class OcrBase64Request(BaseModel):
+    image_base64: str
+    prompt: str = OCR_PROMPT
 
-    print(f"[OCR]   {result!r}")
-    print(f"[TIME]  {elapsed:.3f}s")
-    return elapsed
+
+class OcrResponse(BaseModel):
+    result: str
+
+
+# ── Endpoints ─────────────────────────────────────────────────────────────────
+
+@app.get("/health")
+async def health():
+    """Check if llama.cpp server is reachable."""
+    try:
+        models = _client.models.list()
+        return {"status": "ok", "models": [m.id for m in models.data]}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"llama.cpp server unreachable: {e}")
+
+
+@app.post("/ocr/upload", response_model=OcrResponse)
+async def ocr_upload(
+    file: UploadFile = File(..., description="Image file to OCR"),
+    prompt: str = Form(default=OCR_PROMPT),
+):
+    """OCR an uploaded image file."""
+    try:
+        data = await file.read()
+        img  = Image.open(io.BytesIO(data)).convert("RGB")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid image file")
+
+    b64 = _image_to_base64(img)
+    result = _call_glm_ocr(b64, prompt)
+    return OcrResponse(result=result)
+
+
+@app.post("/ocr/base64", response_model=OcrResponse)
+async def ocr_base64(request: OcrBase64Request):
+    """OCR a base64-encoded image."""
+    try:
+        data = base64.b64decode(request.image_base64)
+        img  = Image.open(io.BytesIO(data)).convert("RGB")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid base64 image")
+
+    b64 = _image_to_base64(img)
+    result = _call_glm_ocr(b64, request.prompt)
+    return OcrResponse(result=result)
 
 
 if __name__ == "__main__":
-    images = sorted(
-        os.path.join(IMAGE_DIR, f)
-        for f in os.listdir(IMAGE_DIR)
-        if f.lower().endswith((".jpg", ".jpeg", ".png"))
-    )
-
-    if not images:
-        print(f"No images found in {IMAGE_DIR}")
-    else:
-        glm_ocr_process = start_glm_ocr_server()
-        try:
-            total_start = time.perf_counter()
-            elapsed_times = [test_image(path) for path in images]
-            total_elapsed = time.perf_counter() - total_start
-
-            print(f"\n[TOTAL] {total_elapsed:.3f}s for {len(images)} image(s)")
-            print(f"[AVG]   {sum(elapsed_times) / len(elapsed_times):.3f}s/image")
-        finally:
-            stop_glm_ocr_server(glm_ocr_process)
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8001)
