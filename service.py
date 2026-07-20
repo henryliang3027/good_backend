@@ -25,14 +25,12 @@ debug_font = ImageFont.truetype(_FONT_PATH, size=18)
 # ========== Model & DB Config ==========
 YOLO_MODEL_PATH = "yolo_model/bottle_detector/best_M_130_20260425.pt"
 CAP_YOLO_MODEL_PATH = "yolo_model/cap_detector/best_L_101_20260424.pt"
-SHELF_YOLO_MODEL_PATH = "yolo_model/shelf_detector/best_M_71_20260507.pt"
 DATE_YOLO_MODEL_PATH = "yolo_model/date_detector/best_v11m_1280_20260602.pt"
 BOX_OBB_YOLO_MODEL_PATH = "yolo_model/box_obb_detector/best_26m_obb_640_20260624.pt"
 CAP_CONF_THRESHOLD = 0.80
 BOTTLE_CONF_THRESHOLD = 0.80
-SHELF_CONF_THRESHOLD = 0.80
 DATE_CONF_THRESHOLD = 0.80
-BOX_OBB_CONF_THRESHOLD = 0.80
+BOX_OBB_CONF_THRESHOLD = 0.60
 
 BOX_OBB_LABEL_NAMES = {
     0: "來一客牛肉蔬菜風味",
@@ -90,7 +88,6 @@ class Base64ImageRequest(BaseModel):
 # ========== Global Objects ==========
 yolo_model = None
 cap_yolo_model = None
-shelf_yolo_model = None
 date_yolo_model = None
 box_obb_yolo_model = None
 
@@ -259,7 +256,7 @@ signal.signal(signal.SIGTERM, _signal_handler)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global yolo_model, cap_yolo_model, shelf_yolo_model, date_yolo_model, box_obb_yolo_model
+    global yolo_model, cap_yolo_model, date_yolo_model, box_obb_yolo_model
     print("🚀 正在啟動系統並載入模型...")
 
     yolo_model = YOLO(YOLO_MODEL_PATH)
@@ -268,8 +265,6 @@ async def lifespan(app: FastAPI):
     cap_yolo_model = YOLO(CAP_YOLO_MODEL_PATH)
     print(f"✅ Cap YOLO 模型載入完成: {CAP_YOLO_MODEL_PATH}")
 
-    shelf_yolo_model = YOLO(SHELF_YOLO_MODEL_PATH)
-    print(f"✅ Shelf YOLO 模型載入完成: {SHELF_YOLO_MODEL_PATH}")
 
     date_yolo_model = YOLO(DATE_YOLO_MODEL_PATH)
     print(f"✅ Date YOLO 模型載入完成: {DATE_YOLO_MODEL_PATH}")
@@ -304,11 +299,8 @@ class Base64ImageRequest(BaseModel):
 DEBUG_DIR = "detected_bottle"
 LABEL_CAPS_DIR = "label_caps"
 LABEL_BOTTLES_DIR = "label_bottles"
-LABEL_SHELF_DIR = "label_shelf"
 ORIGINAL_BOTTLE_AND_CAP_IMAGES_DIR = "original_bottle_and_cap_images"
-ORIGINAL_SHELF_IMAGES_DIR = "original_shelf_images"
 ORIGINAL_BOX_IMAGES_DIR = "original_box_images"
-DETECTED_SHELF_DIR = "detected_shelf"
 DETECTED_BOX_DIR = "detected_box"
 LABEL_OBB_BOXES_DIR = "label_obb_boxes"
 LABEL_BOXES_DATE_DIR = "label_boxes_date"
@@ -316,9 +308,9 @@ CROPPED_DATE_IMAGE_DIR = "cropped_date_image"
 CROPPED_BOXES_DIR = "cropped_boxes"
 
 
-for _dir in [DEBUG_DIR, LABEL_CAPS_DIR, LABEL_BOTTLES_DIR, LABEL_SHELF_DIR,
-             ORIGINAL_BOTTLE_AND_CAP_IMAGES_DIR, ORIGINAL_SHELF_IMAGES_DIR,
-             ORIGINAL_BOX_IMAGES_DIR, DETECTED_SHELF_DIR, DETECTED_BOX_DIR,
+for _dir in [DEBUG_DIR, LABEL_CAPS_DIR, LABEL_BOTTLES_DIR, 
+             ORIGINAL_BOTTLE_AND_CAP_IMAGES_DIR, 
+             ORIGINAL_BOX_IMAGES_DIR, DETECTED_BOX_DIR,
              LABEL_OBB_BOXES_DIR, LABEL_BOXES_DATE_DIR, CROPPED_DATE_IMAGE_DIR,
              CROPPED_BOXES_DIR]:
     os.makedirs(_dir, exist_ok=True)
@@ -334,6 +326,20 @@ def bbox_iou(a: tuple, b: tuple) -> float:
     area_a = (a[2] - a[0]) * (a[3] - a[1])
     area_b = (b[2] - b[0]) * (b[3] - b[1])
     return inter / (area_a + area_b - inter)
+
+
+
+def point_in_polygon(px: float, py: float, polygon: list) -> bool:
+    """Ray casting：判斷點 (px,py) 是否落在多邊形 polygon (含旋轉框) 內。"""
+    n = len(polygon)
+    inside = False
+    x1, y1 = polygon[0]
+    for i in range(1, n + 1):
+        x2, y2 = polygon[i % n]
+        if ((y1 > py) != (y2 > py)) and (px < (x2 - x1) * (py - y1) / (y2 - y1 + 1e-9) + x1):
+            inside = not inside
+        x1, y1 = x2, y2
+    return inside
 
 
 def group_overlapping_bboxes(bboxes: list[tuple]) -> list[list[int]]:
@@ -397,8 +403,8 @@ async def inventory_base64(request: Base64ImageRequest):
         image_data = base64.b64decode(request.image_base64)
         if request.mode == 2:
             pil_image = ImageOps.exif_transpose(Image.open(io.BytesIO(image_data))).convert("RGB")
-            shelf_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            pil_image.save(os.path.join(DETECTED_SHELF_DIR, f"shelf_{shelf_ts}.jpg"))
+            # shelf_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            # pil_image.save(os.path.join(DETECTED_SHELF_DIR, f"shelf_{shelf_ts}.jpg"))
         else:
             pil_image = Image.open(io.BytesIO(image_data)).convert("RGB")
         print(f"[IMAGE] decode={round(time.time()-t0, 3)}s, size={len(image_data)} bytes, width={pil_image.width}, height={pil_image.height}")
@@ -406,27 +412,6 @@ async def inventory_base64(request: Base64ImageRequest):
         raise HTTPException(status_code=400, detail="圖片解碼失敗")
     
 
-    # 1-1 image vive glass, detect shelf and crop
-    if request.mode == 2:
-        
-        shelf_results = shelf_yolo_model(pil_image, conf=SHELF_CONF_THRESHOLD, verbose=False)
-        shelf_boxes = [
-            (float(box.conf[0]), tuple(int(v) for v in box.xyxy[0].tolist()))
-            for result in shelf_results
-            for box in result.boxes
-        ]
-        if shelf_boxes:
-            shelf_conf, (sx1, sy1, sx2, sy2) = max(shelf_boxes, key=lambda x: x[0])
-            shelf_debug = pil_image.copy()
-            shelf_draw = ImageDraw.Draw(shelf_debug)
-            shelf_draw.rectangle([sx1, sy1, sx2, sy2], outline="red", width=3)
-            shelf_draw.text((sx1, max(0, sy1 - 30)), f"shelf {shelf_conf:.2f}", fill="red", font=debug_font)
-            shelf_debug.save(os.path.join(DETECTED_SHELF_DIR, f"shelf_{shelf_ts}.jpg"))
-            pil_image = pil_image.crop((sx1, sy1, sx2, sy2))
-            print(f"[SHELF] cropped to ({sx1},{sy1},{sx2},{sy2}), new size={pil_image.width}x{pil_image.height}")
-        else:
-            
-            print("[SHELF] no shelf detected, using full image")
 
     # 2. YOLO bottle 偵測
     t0 = time.time()
@@ -565,94 +550,6 @@ async def inventory_base64(request: Base64ImageRequest):
 
 
 
-TOP_SHELF = {
-    "冷山茶王",
-    "愛之味油切分解茶四季春風味",
-    "濃韻無糖烏龍茶",
-    "無加糖LP33機能優酪乳",
-    "每朝健康双纖綠茶",
-    "每朝健康熟藏紅茶",
-}
-
-BOTTOM_SHELF = {
-    "茶裏王台式綠茶",
-    "茶裏王日式無糖綠茶",
-    "茶裏王白毫烏龍",
-    "原萃台灣青茶",
-    "原萃烏龍茶",
-    "原萃鐵觀音",
-}
-
-
-class CheckOutOfStockRequest(BaseModel):
-    image_base64: str
-
-
-@app.post("/check_out_of_stock")
-async def check_out_of_stock(request: CheckOutOfStockRequest):
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-
-    # 1. 解碼圖片 (mode=2: EXIF transpose + shelf crop)
-    try:
-        image_data = base64.b64decode(request.image_base64)
-        pil_image = ImageOps.exif_transpose(Image.open(io.BytesIO(image_data))).convert("RGB")
-        shelf_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        pil_image.save(os.path.join(ORIGINAL_SHELF_IMAGES_DIR, f"input_shelf_{timestamp}.jpg"))
-    except Exception:
-        raise HTTPException(status_code=400, detail="圖片解碼失敗")
-
-    # 2. 偵測貨架並裁切
-    shelf_results = shelf_yolo_model(pil_image, conf=SHELF_CONF_THRESHOLD, verbose=False)
-    shelf_boxes = [
-        (float(box.conf[0]), tuple(int(v) for v in box.xyxy[0].tolist()))
-        for result in shelf_results
-        for box in result.boxes
-    ]
-    if not shelf_boxes:
-        return {"status": "0", "data": "未偵測到貨架"}
-
-    shelf_conf, (sx1, sy1, sx2, sy2) = max(shelf_boxes, key=lambda x: x[0])
-    shelf_debug = pil_image.copy()
-    shelf_draw = ImageDraw.Draw(shelf_debug)
-    shelf_draw.rectangle([sx1, sy1, sx2, sy2], outline="red", width=3)
-    shelf_draw.text((sx1, max(0, sy1 - 30)), f"shelf {shelf_conf:.2f}", fill="red", font=debug_font)
-    shelf_debug.save(os.path.join(DETECTED_SHELF_DIR, f"shelf_{timestamp}.jpg"))
-
-    # 2-1. Debug: 儲存標註圖 shelf
-    iw_full, ih_full = pil_image.width, pil_image.height
-    scx = (sx1 + sx2) / 2 / iw_full
-    scy = (sy1 + sy2) / 2 / ih_full
-    sw  = (sx2 - sx1) / iw_full
-    sh  = (sy2 - sy1) / ih_full
-    with open(os.path.join(LABEL_SHELF_DIR, f"input_{timestamp}.txt"), "w") as f:
-        f.write(f"0 {scx:.6f} {scy:.6f} {sw:.6f} {sh:.6f}\n")
-
-    pil_image = pil_image.crop((sx1, sy1, sx2, sy2))
-
-    # 3. YOLO bottle 偵測
-    detected_names, bottle_bboxes = detect_and_label(pil_image)
-    counts = dict(Counter(detected_names))
-    print(f"counts={counts}")
-
-    # 6. 判斷缺貨
-    top_out_of_stock = [item for item in TOP_SHELF if item not in counts]
-    bottom_out_of_stock = [item for item in BOTTOM_SHELF if item not in counts]
-
-    print(f"top={top_out_of_stock}")
-    print(f"bottom={bottom_out_of_stock}")
-
-    return {
-        "status": "1",
-        "data": [
-            {"position": "top", "out_of_stock": top_out_of_stock},
-            {"position": "bottom", "out_of_stock": bottom_out_of_stock},
-        ],
-    }
-
-
-
-
 
 def glm_ocr_llama(base64_image: str) -> str:
     response = glm_ocr_client.chat.completions.create(
@@ -735,12 +632,10 @@ async def box_date_detection(request: BoxDetectionRequest):
 
     # 1. OBB YOLO 偵測商品箱子
     box_obb_results = box_obb_yolo_model(pil_image, conf=BOX_OBB_CONF_THRESHOLD, verbose=False)
-    box_detections = []  # list of {"name": str, "bbox": (x1,y1,x2,y2)}
+    box_detections = []  # list of {"name": str, "bbox": (x1,y1,x2,y2), "obb": [[x,y],...]}
 
     iw, ih = pil_image.width, pil_image.height
     obb_label_lines = []
-
-    output = []
 
     for result in box_obb_results:
         if result.obb is None:
@@ -765,25 +660,65 @@ async def box_date_detection(request: BoxDetectionRequest):
             norm_pts = " ".join(f"{v[0]/iw:.6f} {v[1]/ih:.6f}" for v in corners)
             obb_label_lines.append(f"{cls_id} {norm_pts}")
 
-
-            buf = io.BytesIO()
-            box_crop.save(buf, format="JPEG", quality=95, subsampling=0)
-            box_crop_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-
-            ocr_text = glm_ocr_llama(box_crop_b64)
-            parsed_date = _parse_date_from_ocr(ocr_text)
-            print(f"[BOX OCR] {name} text={ocr_text!r} → {parsed_date}")
-
-            output.append({
-                "name": name,
-                "obb": obb_pts,
-                "date": parsed_date,
-                "date_bbox": None,
-            })
-
     with open(os.path.join(LABEL_OBB_BOXES_DIR, f"input_{timestamp}.txt"), "w") as f:
         f.write("\n".join(obb_label_lines))
 
+    # 2. 在整張圖上跑 date YOLO，偵測 date region
+    date_results = date_yolo_model(pil_image, conf=DATE_CONF_THRESHOLD, verbose=False)
+    date_regions = []  # list of {"bbox": [x1,y1,x2,y2], "conf": float}
+
+    for result in date_results:
+        for box in result.boxes:
+            conf = float(box.conf[0])
+            dx1, dy1, dx2, dy2 = (int(v) for v in box.xyxy[0].tolist())
+            date_regions.append({"bbox": [dx1, dy1, dx2, dy2], "conf": conf})
+            draw.rectangle([dx1, dy1, dx2, dy2], outline=(0, 220, 0), width=2)
+            draw.text((dx1, max(0, dy1 - 15)), f"date {conf:.2f}", fill=(0, 220, 0), font=debug_font)
+            print(f"[DATE] conf={conf:.2f} bbox=({dx1},{dy1},{dx2},{dy2})")
+
+    # 3. 配對每個 date region，看落在哪個 box 的 obb 內，再對該區域做 OCR
+    box_best_date = [None] * len(box_detections)  # {"date": ..., "date_bbox": ...}
+
+    for date_idx, date_region in enumerate(date_regions):
+        dx1, dy1, dx2, dy2 = date_region["bbox"]
+        cx, cy = (dx1 + dx2) / 2, (dy1 + dy2) / 2
+
+        matched_box_idx = None
+        for box_idx, box_det in enumerate(box_detections):
+            if point_in_polygon(cx, cy, box_det["obb"]):
+                matched_box_idx = box_idx
+                break
+
+        if matched_box_idx is None:
+            print(f"[MATCH] date region {date_idx} 未落在任何 box 內，略過")
+            continue
+
+        date_crop = pil_image.crop((dx1, dy1, dx2, dy2))
+        date_crop.save(os.path.join(CROPPED_DATE_IMAGE_DIR, f"date_{timestamp}_{date_idx}_1.jpg"), quality=95, subsampling=0)
+        buf = io.BytesIO()
+        date_crop.save(buf, format="JPEG", quality=95, subsampling=0)
+        date_crop_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+        ocr_text = glm_ocr_llama(date_crop_b64)
+        parsed_date = _parse_date_from_ocr(ocr_text)
+        print(f"[DATE OCR] box={box_detections[matched_box_idx]['name']} text={ocr_text!r} → {parsed_date}")
+
+        if parsed_date is not None and box_best_date[matched_box_idx] is None:
+            box_best_date[matched_box_idx] = {
+                "date": parsed_date,
+                "date_bbox": [dx1, dy1, dx2, dy2],
+            }
+
+    output = []
+    for box_idx, box_det in enumerate(box_detections):
+        matched = box_best_date[box_idx] or {"date": None, "date_bbox": None}
+        output.append({
+            "name": box_det["name"],
+            "obb": box_det["obb"],
+            "date": matched["date"],
+            "date_bbox": matched["date_bbox"],
+        })
+        print(f"[MATCH] {box_det['name']} → {matched['date']}")
 
     overview.save(os.path.join(DETECTED_BOX_DIR, f"box_{timestamp}.jpg"), quality=95, subsampling=0)
 
@@ -792,115 +727,115 @@ async def box_date_detection(request: BoxDetectionRequest):
 
 
 
-@app.post("/box_date_detection2")
-async def box_date_detection2(request: BoxDetectionRequest):
-    try:
-        image_data = base64.b64decode(request.image_base64)
-        pil_image = ImageOps.exif_transpose(Image.open(io.BytesIO(image_data))).convert("RGB")
-    except Exception:
-        raise HTTPException(status_code=400, detail="圖片解碼失敗")
+# @app.post("/box_date_detection2")
+# async def box_date_detection2(request: BoxDetectionRequest):
+#     try:
+#         image_data = base64.b64decode(request.image_base64)
+#         pil_image = ImageOps.exif_transpose(Image.open(io.BytesIO(image_data))).convert("RGB")
+#     except Exception:
+#         raise HTTPException(status_code=400, detail="圖片解碼失敗")
 
-    print(f"[IMAGE] width={pil_image.width}, height={pil_image.height}")
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    pil_image.save(os.path.join(ORIGINAL_BOX_IMAGES_DIR, f"input2_{timestamp}.jpg"))
-    overview = pil_image.copy()
-    draw = ImageDraw.Draw(overview)
+#     print(f"[IMAGE] width={pil_image.width}, height={pil_image.height}")
+#     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+#     pil_image.save(os.path.join(ORIGINAL_BOX_IMAGES_DIR, f"input2_{timestamp}.jpg"))
+#     overview = pil_image.copy()
+#     draw = ImageDraw.Draw(overview)
 
-    # 1. OBB YOLO 偵測商品箱子
-    iw, ih = pil_image.width, pil_image.height
-    box_obb_results = box_obb_yolo_model(pil_image, conf=BOX_OBB_CONF_THRESHOLD, verbose=False)
-    box_detections = []
-    obb_label_lines = []
+#     # 1. OBB YOLO 偵測商品箱子
+#     iw, ih = pil_image.width, pil_image.height
+#     box_obb_results = box_obb_yolo_model(pil_image, conf=BOX_OBB_CONF_THRESHOLD, verbose=False)
+#     box_detections = []
+#     obb_label_lines = []
 
-    for result in box_obb_results:
-        if result.obb is None:
-            continue
-        for i in range(len(result.obb)):
-            cls_id = int(result.obb.cls[i])
-            conf = float(result.obb.conf[i])
-            name = BOX_OBB_LABEL_NAMES.get(cls_id, f"未知({cls_id})")
-            x1, y1, x2, y2 = (int(v) for v in result.obb.xyxy[i].tolist())
-            obb_pts = [[int(v[0]), int(v[1])] for v in result.obb.xyxyxyxy[i].tolist()]
-            box_detections.append({"name": name, "bbox": [x1, y1, x2, y2], "obb": obb_pts, "cls_id": cls_id, "conf": conf})
-            color = BOX_COLORS[cls_id % len(BOX_COLORS)]
-            pts = [(int(v[0]), int(v[1])) for v in result.obb.xyxyxyxy[i].tolist()]
-            draw.polygon(pts, outline=color, width=4)
-            draw.text((x1, max(0, y1 - 30)), f"{name} {conf:.2f}", fill=color, font=debug_font)
-            print(f"[BOX OBB] {name} conf={conf:.2f} bbox=({x1},{y1},{x2},{y2})")
+#     for result in box_obb_results:
+#         if result.obb is None:
+#             continue
+#         for i in range(len(result.obb)):
+#             cls_id = int(result.obb.cls[i])
+#             conf = float(result.obb.conf[i])
+#             name = BOX_OBB_LABEL_NAMES.get(cls_id, f"未知({cls_id})")
+#             x1, y1, x2, y2 = (int(v) for v in result.obb.xyxy[i].tolist())
+#             obb_pts = [[int(v[0]), int(v[1])] for v in result.obb.xyxyxyxy[i].tolist()]
+#             box_detections.append({"name": name, "bbox": [x1, y1, x2, y2], "obb": obb_pts, "cls_id": cls_id, "conf": conf})
+#             color = BOX_COLORS[cls_id % len(BOX_COLORS)]
+#             pts = [(int(v[0]), int(v[1])) for v in result.obb.xyxyxyxy[i].tolist()]
+#             draw.polygon(pts, outline=color, width=4)
+#             draw.text((x1, max(0, y1 - 30)), f"{name} {conf:.2f}", fill=color, font=debug_font)
+#             print(f"[BOX OBB] {name} conf={conf:.2f} bbox=({x1},{y1},{x2},{y2})")
 
-            corners = result.obb.xyxyxyxy[i].tolist()
-            norm_pts = " ".join(f"{v[0]/iw:.6f} {v[1]/ih:.6f}" for v in corners)
-            obb_label_lines.append(f"{cls_id} {norm_pts}")
+#             corners = result.obb.xyxyxyxy[i].tolist()
+#             norm_pts = " ".join(f"{v[0]/iw:.6f} {v[1]/ih:.6f}" for v in corners)
+#             obb_label_lines.append(f"{cls_id} {norm_pts}")
 
-    with open(os.path.join(LABEL_OBB_BOXES_DIR, f"input2_{timestamp}.txt"), "w") as f:
-        f.write("\n".join(obb_label_lines))
+#     with open(os.path.join(LABEL_OBB_BOXES_DIR, f"input2_{timestamp}.txt"), "w") as f:
+#         f.write("\n".join(obb_label_lines))
 
-    # 2. 對每個偵測到的箱子裁切，再個別跑 date YOLO + OCR
-    date_label_lines = []
-    output = []
-    date_number = 0
-    for box_det in box_detections:
-        bx1, by1, bx2, by2 = box_det["bbox"]
-        box_crop = pil_image.crop((bx1, by1, bx2, by2))
-        bcw, bch = box_crop.width, box_crop.height
+#     # 2. 對每個偵測到的箱子裁切，再個別跑 date YOLO + OCR
+#     date_label_lines = []
+#     output = []
+#     date_number = 0
+#     for box_det in box_detections:
+#         bx1, by1, bx2, by2 = box_det["bbox"]
+#         box_crop = pil_image.crop((bx1, by1, bx2, by2))
+#         bcw, bch = box_crop.width, box_crop.height
 
-        date_results = date_yolo_model(box_crop, conf=DATE_CONF_THRESHOLD, verbose=False)
+#         date_results = date_yolo_model(box_crop, conf=DATE_CONF_THRESHOLD, verbose=False)
 
-        best_date, best_date_bbox = None, None
+#         best_date, best_date_bbox = None, None
         
 
-        for result in date_results:
-            for date_idx, box in enumerate(result.boxes):
-                conf = float(box.conf[0])
-                dx1, dy1, dx2, dy2 = (int(v) for v in box.xyxy[0].tolist())
+#         for result in date_results:
+#             for date_idx, box in enumerate(result.boxes):
+#                 conf = float(box.conf[0])
+#                 dx1, dy1, dx2, dy2 = (int(v) for v in box.xyxy[0].tolist())
 
-                # 座標轉回原圖空間
-                abs_x1 = bx1 + dx1
-                abs_y1 = by1 + dy1
-                abs_x2 = bx1 + dx2
-                abs_y2 = by1 + dy2
+#                 # 座標轉回原圖空間
+#                 abs_x1 = bx1 + dx1
+#                 abs_y1 = by1 + dy1
+#                 abs_x2 = bx1 + dx2
+#                 abs_y2 = by1 + dy2
 
-                draw.rectangle([abs_x1, abs_y1, abs_x2, abs_y2], outline=(0, 220, 0), width=2)
-                draw.text((abs_x1, max(0, abs_y1 - 15)), f"date {conf:.2f}", fill=(0, 220, 0), font=debug_font)
-                print(f"[DATE in {box_det['name']}] conf={conf:.2f} bbox=({dx1},{dy1},{dx2},{dy2})")
+#                 draw.rectangle([abs_x1, abs_y1, abs_x2, abs_y2], outline=(0, 220, 0), width=2)
+#                 draw.text((abs_x1, max(0, abs_y1 - 15)), f"date {conf:.2f}", fill=(0, 220, 0), font=debug_font)
+#                 print(f"[DATE in {box_det['name']}] conf={conf:.2f} bbox=({dx1},{dy1},{dx2},{dy2})")
 
-                cx = ((dx1 + dx2) / 2) / bcw
-                cy = ((dy1 + dy2) / 2) / bch
-                w  = (dx2 - dx1) / bcw
-                h  = (dy2 - dy1) / bch
-                date_label_lines.append(f"0 {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
+#                 cx = ((dx1 + dx2) / 2) / bcw
+#                 cy = ((dy1 + dy2) / 2) / bch
+#                 w  = (dx2 - dx1) / bcw
+#                 h  = (dy2 - dy1) / bch
+#                 date_label_lines.append(f"0 {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
 
-                date_crop = box_crop.crop((dx1, dy1, dx2, dy2))
-                print(f"date:{date_idx}")
-                date_crop.save(os.path.join(CROPPED_DATE_IMAGE_DIR, f"date_{timestamp}_{date_number}_2.jpg"), quality=95, subsampling=0)
-                date_number+=1
-                buf = io.BytesIO()
-                date_crop.save(buf, format="JPEG", quality=95, subsampling=0)
-                crop_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+#                 date_crop = box_crop.crop((dx1, dy1, dx2, dy2))
+#                 print(f"date:{date_idx}")
+#                 date_crop.save(os.path.join(CROPPED_DATE_IMAGE_DIR, f"date_{timestamp}_{date_number}_2.jpg"), quality=95, subsampling=0)
+#                 date_number+=1
+#                 buf = io.BytesIO()
+#                 date_crop.save(buf, format="JPEG", quality=95, subsampling=0)
+#                 crop_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
 
-                ocr_text = glm_ocr_llama(crop_b64)
-                # ocr_text = "20260101"
-                parsed_date = _parse_date_from_ocr(ocr_text)
-                print(f"[DATE OCR] text={ocr_text!r} → {parsed_date}")
+#                 ocr_text = glm_ocr_llama(crop_b64)
+#                 # ocr_text = "20260101"
+#                 parsed_date = _parse_date_from_ocr(ocr_text)
+#                 print(f"[DATE OCR] text={ocr_text!r} → {parsed_date}")
 
-                if best_date is None and parsed_date is not None:
-                    best_date = parsed_date
-                    best_date_bbox = [abs_x1, abs_y1, abs_x2, abs_y2]
+#                 if best_date is None and parsed_date is not None:
+#                     best_date = parsed_date
+#                     best_date_bbox = [abs_x1, abs_y1, abs_x2, abs_y2]
 
-        output.append({
-            "name": box_det["name"],
-            "obb": box_det["obb"],
-            "date": best_date,
-            "date_bbox": best_date_bbox,
-        })
-        print(f"[MATCH] {box_det['name']} → {best_date}")
+#         output.append({
+#             "name": box_det["name"],
+#             "obb": box_det["obb"],
+#             "date": best_date,
+#             "date_bbox": best_date_bbox,
+#         })
+#         print(f"[MATCH] {box_det['name']} → {best_date}")
 
-    with open(os.path.join(LABEL_BOXES_DATE_DIR, f"input2_{timestamp}.txt"), "w") as f:
-        f.write("\n".join(date_label_lines))
+#     with open(os.path.join(LABEL_BOXES_DATE_DIR, f"input2_{timestamp}.txt"), "w") as f:
+#         f.write("\n".join(date_label_lines))
 
-    # overview.save(os.path.join(DETECTED_BOX_DIR, f"box2_{timestamp}.jpg"), quality=95, subsampling=0)
+#     # overview.save(os.path.join(DETECTED_BOX_DIR, f"box2_{timestamp}.jpg"), quality=95, subsampling=0)
 
-    return {"status": "1", "data": output}
+#     return {"status": "1", "data": output}
 
 
 if __name__ == "__main__":
