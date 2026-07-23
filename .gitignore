@@ -19,10 +19,4 @@ original_bottle_and_cap_images/*
 *.pyc
 *.pt
 *.gguf
-
-
-
-
-
-
-
+labeled_cropped_box_date/*

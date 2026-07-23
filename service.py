@@ -26,7 +26,7 @@ debug_font = ImageFont.truetype(_FONT_PATH, size=18)
 YOLO_MODEL_PATH = "yolo_model/bottle_detector/best_M_130_20260425.pt"
 CAP_YOLO_MODEL_PATH = "yolo_model/cap_detector/best_L_101_20260424.pt"
 DATE_YOLO_MODEL_PATH = "yolo_model/date_detector/best_v11m_1280_20260602.pt"
-BOX_OBB_YOLO_MODEL_PATH = "yolo_model/box_obb_detector/best_26m_obb_640_20260624.pt"
+BOX_OBB_YOLO_MODEL_PATH = "yolo_model/box_obb_detector/best_26m_obb_640_20260721.pt"
 CAP_CONF_THRESHOLD = 0.80
 BOTTLE_CONF_THRESHOLD = 0.80
 DATE_CONF_THRESHOLD = 0.80
@@ -306,13 +306,14 @@ LABEL_OBB_BOXES_DIR = "label_obb_boxes"
 LABEL_BOXES_DATE_DIR = "label_boxes_date"
 CROPPED_DATE_IMAGE_DIR = "cropped_date_image"
 CROPPED_BOXES_DIR = "cropped_boxes"
+LABELED_CROPPED_BOX_DATE_DIR = "/home/b40351/Documents/Github/good_backend/labeled_cropped_box_date"
 
 
-for _dir in [DEBUG_DIR, LABEL_CAPS_DIR, LABEL_BOTTLES_DIR, 
-             ORIGINAL_BOTTLE_AND_CAP_IMAGES_DIR, 
+for _dir in [DEBUG_DIR, LABEL_CAPS_DIR, LABEL_BOTTLES_DIR,
+             ORIGINAL_BOTTLE_AND_CAP_IMAGES_DIR,
              ORIGINAL_BOX_IMAGES_DIR, DETECTED_BOX_DIR,
              LABEL_OBB_BOXES_DIR, LABEL_BOXES_DATE_DIR, CROPPED_DATE_IMAGE_DIR,
-             CROPPED_BOXES_DIR]:
+             CROPPED_BOXES_DIR, LABELED_CROPPED_BOX_DATE_DIR]:
     os.makedirs(_dir, exist_ok=True)
 
 
@@ -636,6 +637,7 @@ async def box_date_detection(request: BoxDetectionRequest):
 
     iw, ih = pil_image.width, pil_image.height
     obb_label_lines = []
+    box_idx_counter = 0
 
     for result in box_obb_results:
         if result.obb is None:
@@ -654,7 +656,8 @@ async def box_date_detection(request: BoxDetectionRequest):
             print(f"[BOX OBB] {name} conf={conf:.2f} bbox=({x1},{y1},{x2},{y2})")
 
             box_crop = pil_image.crop((x1, y1, x2, y2))
-            box_crop.save(os.path.join(CROPPED_BOXES_DIR, f"box_{timestamp}_{i}_1.jpg"), quality=95, subsampling=0)
+            box_crop.save(os.path.join(CROPPED_BOXES_DIR, f"box_{timestamp}_{box_idx_counter}_1.jpg"), quality=95, subsampling=0)
+            box_idx_counter += 1
 
             corners = result.obb.xyxyxyxy[i].tolist()
             norm_pts = " ".join(f"{v[0]/iw:.6f} {v[1]/ih:.6f}" for v in corners)
@@ -719,6 +722,30 @@ async def box_date_detection(request: BoxDetectionRequest):
             "date_bbox": matched["date_bbox"],
         })
         print(f"[MATCH] {box_det['name']} → {matched['date']}")
+
+        if matched["date_bbox"] is not None:
+            bx1, by1, bx2, by2 = box_det["bbox"]
+            bw, bh = bx2 - bx1, by2 - by1
+            dx1, dy1, dx2, dy2 = matched["date_bbox"]
+
+            # date bbox is in original-image coordinates; shift into the
+            # cropped box's coordinate frame and clamp to the crop bounds
+            rx1 = min(max(dx1 - bx1, 0), bw)
+            ry1 = min(max(dy1 - by1, 0), bh)
+            rx2 = min(max(dx2 - bx1, 0), bw)
+            ry2 = min(max(dy2 - by1, 0), bh)
+
+            if bw > 0 and bh > 0 and rx2 > rx1 and ry2 > ry1:
+                x_center = (rx1 + rx2) / 2 / bw
+                y_center = (ry1 + ry2) / 2 / bh
+                norm_w = (rx2 - rx1) / bw
+                norm_h = (ry2 - ry1) / bh
+                label_line = f"0 {x_center:.6f} {y_center:.6f} {norm_w:.6f} {norm_h:.6f}"
+                label_path = os.path.join(
+                    LABELED_CROPPED_BOX_DATE_DIR, f"box_{timestamp}_{box_idx}_1.txt"
+                )
+                with open(label_path, "w") as f:
+                    f.write(label_line)
 
     overview.save(os.path.join(DETECTED_BOX_DIR, f"box_{timestamp}.jpg"), quality=95, subsampling=0)
 
