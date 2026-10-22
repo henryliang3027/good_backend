@@ -78,8 +78,7 @@ if __name__ == "__main__":
     print(f"✅ Seg YOLO 模型載入完成: {MODEL_PATH}")
 
     image_list = [
-        "/home/ubuntu/Documents/Github/service_template/test_images/20260702_112112_jpg.rf.d1876f0eb76cfcb49cfb446fb8c151f6.jpg",
-        "/home/ubuntu/Documents/Github/service_template/test_images/ct4.jpg"
+        "/home/ubuntu/Documents/Github/service_template/test_images/sample.jpg",
     ]
 
     for image_path in image_list:

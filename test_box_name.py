@@ -24,7 +24,7 @@ from openai import OpenAI
 from PIL import Image, ImageDraw, ImageFont
 from ultralytics import YOLO
 
-from date_extractor import extract_dates
+from service_api.services.date_extractor import extract_dates
 
 # ── Config ────────────────────────────────────────────────────────────────────
 YOLO_MODEL_PATH = os.getenv(
@@ -37,7 +37,7 @@ LLAMA_CPP_URL = os.getenv("LLAMA_CPP_URL", "http://localhost:8000/v1")
 OCR_PROMPT = os.getenv("OCR_PROMPT", "請對這張圖片進行 OCR，輸出圖中所有文字。")
 
 IMAGE_LIST = [
-    "/home/ubuntu/Documents/Github/service_template/test_images/test2.jpg"
+    "/home/ubuntu/Documents/Github/service_template/test_images/test01.jpg"
     # "/home/ubuntu/Documents/Github/service_template/test_images/20260702_112112_jpg.rf.d1876f0eb76cfcb49cfb446fb8c151f6.jpg",
     # "/home/ubuntu/Documents/Github/service_template/test_images/ct4.jpg",
     # "/home/ubuntu/Documents/Github/service_template/test_images/20260627_122740.jpg",
@@ -215,7 +215,7 @@ def process_image(image_path: str, model: YOLO) -> None:
         cropped_pil = crop_with_mask(img_bgr, polygon)
 
         ocr_text, ocr_elapsed = call_glm_ocr(cropped_pil)
-        # print(f"     GLM-OCR ({ocr_elapsed:.2f}s)：{ocr_text.strip()}")
+        print(f"GLM-OCR ({ocr_elapsed:.2f}s)：{ocr_text.strip()}")
 
         matched = match_product(ocr_text, products)
         name_line = (

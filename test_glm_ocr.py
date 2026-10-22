@@ -28,7 +28,7 @@ MODEL_PATH   = os.getenv("MODEL_PATH",    os.path.join(_REPO_ROOT, "models", "gl
 MMPROJ_PATH  = os.getenv("MMPROJ_PATH",   os.path.join(_REPO_ROOT, "models", "glm-ocr", "mmproj-GLM-OCR-Q8_0.gguf"))
 LIB_PATH     = os.getenv("LD_LIBRARY_PATH", os.path.join(_REPO_ROOT, "llama-b1287"))
 
-LLAMA_PORT     = int(os.getenv("LLAMA_PORT", "8000"))
+LLAMA_PORT     = int(os.getenv("LLAMA_PORT", "8001"))
 LLAMA_CPP_URL  = os.getenv("LLAMA_CPP_URL", f"http://localhost:{LLAMA_PORT}/v1")
 OCR_PROMPT     = os.getenv("OCR_PROMPT", "Text Recognition:")
 N_GPU_LAYERS   = os.getenv("N_GPU_LAYERS", "-1")
@@ -171,4 +171,4 @@ async def ocr_base64(request: OcrBase64Request):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    uvicorn.run(app, host="0.0.0.0", port=8002)

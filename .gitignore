@@ -32,3 +32,5 @@ detected_box_name/*
 evaluate/Date-Real/*
 llama-b1287/*
 detected_seg_box/*
+for_finetune/*
+detected_crop/*

@@ -28,8 +28,12 @@ _PAT_COMPACT = re.compile(
     r'(0[1-9]|[12]\d|3[01])'
     r'(?!\d)'
 )
+# 混合分隔符：每個分隔符可獨立為「.」「/」或空白，處理 OCR 漏辨識分隔符的情況
+# 例如："2026 09.15"（空白+點）或 "2026.09 15"（點+空白）
+_PAT_MIXED = re.compile(r'(\d{4})[ \t./]+(\d{1,2})[ \t./]+(\d{1,2})')
 
-_PATTERNS = [_PAT_DOT, _PAT_SLASH, _PAT_SPACE, _PAT_COMPACT]
+# 優先嘗試嚴格格式（純點/斜線/空白/無分隔），最後才 fallback 到混合格式
+_PATTERNS = [_PAT_DOT, _PAT_SLASH, _PAT_SPACE, _PAT_COMPACT, _PAT_MIXED]
 
 # 關鍵字（較長的優先，避免「製造日期」被「製造」截斷）
 _MANUFACTURE_KW = ["製造日期", "製造"]
